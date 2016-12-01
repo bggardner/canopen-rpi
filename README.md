@@ -1,7 +1,20 @@
 About
 ==========
 
-This repository contains two sets programs that complement each other, but can be used independently.  The first set is a CAN and CANopen modules and example node programs (`canopen-master.py` and `canopen-node.py`).  The node programs can be modified to implement any CANopen node.  The second set are CAN protocol adaptors for HTTP (`canhttp.py`, see below for API) and UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure).  Other adaptors can be derived using these as examples.
+Modules
+-------
+
+This repository contains two Python modules used for instantiating CANopen nodes on a Raspberry Pi.  The first module, `CAN.py`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `CAN.py` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `CANopen.py`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `CAN.Bus`, a node ID (integer, 1 to 127), and an `CANopen.ObjectDictionary`.
+
+Node Applications
+-------------------------
+
+Two example node applications are provided, `canopen-node.py` and `canopen-master.py`.  `canopen-node.py` is the simplest implentation of a node, while `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.  Initilization scripts and instructions for starting the node applications at boot are also provided.
+
+Protocol Adaptors
+-----------------
+
+Two example protocol adaptors for HTTP (`canhttp.py`, see below for API) and UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure) are provided.  Note that these are very crude and do not provide buffering.  Initilization scripts and instructions for starting the adapters at boot are also provided.
 
 Raspberry Pi Setup
 ==================
@@ -36,34 +49,6 @@ sudo update-rc.d dphys-swapfile remove
         ```
 
     3. Reboot: `sudo reboot`
-
-Internet Connection
--------------------
-An internet connection to the Raspberry Pi is required to install software not included in the base image.  With some WiFi adapters, you may need to do the following:
-1. Adjust power driver settings.
-Add `8192cu.conf` file
-```
-sudo nano /etc/modprobe.d/8192cu.conf
-```
-Then add the single line
-```
-options 8192cu rtw_power_mgnt=0 rtw_enusbss=0
-```
-This will disable power management for 8192cu driver
-
-* Configure wireless adapter and connect to nasaguest (required after each power-on)
-
-    ```
-sudo iwconfig wlan0 essid <WIFI_SSID>
-sudo dhclient wlan0
-    ```
-
-* If not using DHCP, set static IP address in `/etc/dhcpcd.conf`:
-
-    ```
-interface eth0
-static ip_address=x.x.x.x/24
-    ```
 
 Add CAN Support
 -----------------------------
@@ -111,6 +96,7 @@ Library Usage
 The simplest node can be run from the following code:
 
 ```
+#!/usr/bin/python3
 import CAN
 import CANopen
 
@@ -136,8 +122,8 @@ node.listen(True) // Allows node to listen to bus
 
 Alternatively, `node.listen(True)` can be replaced with `node.recv(msg: CAN.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.recv(msg: CAN.Message)` and `Node.listen()` are not. 
 
-Example: Configure as CANopen Master with CAN-to-HTTP Adapter
--------------------------------------------------------------
+Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
+---------------------------------------------------------------------
 
 8. Setup webserver
     * Copy [canhttp.py](/canhttp.py) to `/home/pi/`
