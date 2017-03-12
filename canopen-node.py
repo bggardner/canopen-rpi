@@ -34,6 +34,8 @@ canopen_od = CANopen.ObjectDictionary({
         0x01: (CANopen.ODI_SYNC << 16) + (CANopen.ODSI_VALUE << 8) + 32,
         0x02: (CANopen.ODI_SYNC_TIME << 16) + (CANopen.ODSI_VALUE << 8) + 32,
     }),
+    CANopen.ODI_SYNC: 0x80,
+    CANopen.ODI_SYNC_TIME: 0x00000000,
 })
 
 node = CANopen.Node(can_bus, node_id, canopen_od)

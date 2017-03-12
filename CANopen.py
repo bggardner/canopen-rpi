@@ -132,7 +132,7 @@ ODSI_TPDO_COMM_PARAM_TYPE = 0x02
 ODI_TPDO1_MAPPING_PARAMETER = 0x1A00
 
 # SDO
-SDO_N_BITNUM = 1
+SDO_N_BITNUM = 3
 SDO_N_LENGTH = 2
 SDO_E_BITNUM = 1
 SDO_S_BITNUM = 0
@@ -457,6 +457,12 @@ class RunIndicator(Indicator):
         indicator_state = self._get_state(nmt_state)
         super().set_state(indicator_state)
 
+class SdoAbort(Exception):
+    def __init__(self, odi, odsi, code):
+        self.odi = odi
+        self.odsi = odsi
+        self.code = code
+
 class Node:
     def __init__(self, bus: CAN.Bus, id, od: ObjectDictionary, *args, **kwargs):
         self.bus = bus
@@ -483,6 +489,8 @@ class Node:
         self.nmt_state = NMT_STATE_INITIALISATION
         self._heartbeat_consumer_timers = {}
         self._heartbeat_producer_timer = None
+        self._tpdo_triggers = [False, False, False, False]
+        self._sync_counter = 0
         self._sync_timer = None
 
     def __del__(self):
@@ -492,7 +500,7 @@ class Node:
         if self.nmt_state != NMT_STATE_STOPPED:
             emcy_id = self.od.get(ODI_EMCY_ID)
             if emcy_id is not None:
-                msg = CAN.Message(emcy_id, (EMCY_HEARTBEAT_BY_NODE + id).to_bytes(2, byteorder='big') + self.od.get(ODI_ERROR).get(ODSI_VALUE).to_bytes(1, byteorder='big') + b'\x00\x00\x00\x00\x00')
+                msg = CAN.Message(emcy_id, (EMCY_HEARTBEAT_BY_NODE + id).to_bytes(2, byteorder='little') + self.od.get(ODI_ERROR).get(ODSI_VALUE).to_bytes(1, byteorder='little') + b'\x00\x00\x00\x00\x00')
                 self._send(msg)
 
     def _process_err_indicator(self):
@@ -528,6 +536,10 @@ class Node:
             self._sync_timer = IntervalTimer(sync_time, self._send_sync)
             self._sync_timer.start()
 
+    def _process_timers(self):
+        self._process_heartbeat_producer()
+        self._process_sync()
+
     def _reset_timers(self):
         for i,t in self._heartbeat_consumer_timers.items():
             t.cancel()
@@ -559,8 +571,12 @@ class Node:
                     mapping_object = self.od.get(mapping_param >> 16)
                     if mapping_object is not None:
                         mapping_value = mapping_object.get((mapping_param >> 8) & 0xFF)
-                        if mapping_value is not None:
-                            data = data + mapping_value.to_bytes((mapping_param & 0xFF) // 8, byteorder='big')
+                    else:
+                        mapping_value = 0 # This should really raise an exception, invalid PDO mapping ODSI
+                    if mapping_value is not None:
+                        data = data + mapping_value.to_bytes((mapping_param & 0xFF) // 8, byteorder='little')
+                else:
+                    pass # This should really raise an exception, invalid PDO mapping ODI
             msg = CAN.Message(((FUNCTION_CODE_TPDO1 + (2 * i)) << FUNCTION_CODE_BITNUM) + self.id, data)
             self._send(msg)
 
@@ -602,8 +618,7 @@ class Node:
     def boot(self):
         self._send_bootup()
         self.nmt_state = NMT_STATE_PREOPERATIONAL
-        self._process_heartbeat_producer()
-        self._process_sync()
+        self._process_timers()
 
     def recv(self, msg: CAN.Message):
         id = msg.arbitration_id
@@ -619,7 +634,11 @@ class Node:
                         if tpdo1_cp is not None:
                             tpdo1_cp_id = tpdo1_cp.get(ODSI_TPDO_COMM_PARAM_ID)
                             if tpdo1_cp_id is not None and (tpdo1_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo1_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
-                                self._send_pdo(1)
+                                tpdo1_cp_type = tpdo1_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                                if tpdo1_cp_type == 0xFC:
+                                    self._tpdo_triggers[0] = True; # Defer until SYNC event
+                                elif tpdo1_cp_type == 0xFD:
+                                    self._send_pdo(1)
                 elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
                     self._send_heartbeat()
         elif fc == FUNCTION_CODE_NMT:
@@ -639,53 +658,84 @@ class Node:
                     elif cs == NMT_NODE_CONTROL_RESET_COMMUNICATION:
                         self.reset_communication()
         elif fc == FUNCTION_CODE_SYNC and self.nmt_state == NMT_STATE_OPERATIONAL:
-            for i in range(4):
-                tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
-                if tpdo_cp is not None:
-                    tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                    if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                        tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                        if tpdo_cp_type is not None and ((tpdo_cp_type >= 0 and tpdo_cp_type <= 240) or tpdo_cp_type == 252):
-                            self._send_pdo(i + 1)
+            sync_obj = self.od.get(ODI_SYNC)
+            if sync_obj is not None and (sync_obj.get(ODSI_VALUE) & 0x3FF) == id:
+                self._sync_counter = (self._sync_counter + 1) % 241
+                for i in range(4):
+                    tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
+                    if tpdo_cp is not None:
+                        tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                        if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
+                            tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                            if tpdo_cp_type is not None and (((tpdo_cp_type == 0 or tpdo_cp_type == 0xFC) and self._tpdo_triggers[i]) or tpdo_cp_type == self._sync_counter):
+                                self._send_pdo(i + 1)
+                                self._tpdo_triggers[i] = False
         elif fc == FUNCTION_CODE_SDO_RX and self.nmt_state != NMT_STATE_STOPPED:
             sdo_server_object = self.od.get(ODI_SDO_SERVER)
             if sdo_server_object is not None:
-                sdo_server_id = sdo_server_object.get(ODSI_SERVER_DEFAULT_CSID)
+                sdo_server_id = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_CSID)
                 if sdo_server_id is not None and id == sdo_server_id:
-                    ccs = (data[0] >> SDO_CCS_BITNUM) & (2 ** SDO_CCS_LENGTH - 1)
-                    if len(data) >= 4:
-                        odi = (data[1] << 8) + data[2]
-                        odsi = data[3]
-                        if odi in self.od:
-                            obj = self.od.get(odi)
-                            if odsi in obj:
-                                if ccs == SDO_CCS_UPLOAD:
-                                    scs = SDO_SCS_UPLOAD
-                                    sdo_data = obj.get(odsi)
-                                elif ccs == SDO_CCS_DOWNLOAD:
-                                    scs = SDO_SCS_DOWNLOAD
-                                    n = (data[0] >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
-                                    self.od.update({odi: int.from_bytes(data[4:], byteorder='big')}) # Could be data[4:7-n], or different based on data type
-                                    sdo_data = 0
+                    if len(data) == 8:
+                        try:
+                            ccs = (data[0] >> SDO_CCS_BITNUM) & (2 ** SDO_CCS_LENGTH - 1)
+                            odi = (data[2] << 8) + data[1]
+                            odsi = data[3]
+                            if odi in self.od:
+                                obj = self.od.get(odi)
+                                if odsi in obj:
+                                    if ccs == SDO_CCS_UPLOAD:
+                                        scs = SDO_SCS_UPLOAD
+                                        n = None # n = len(self.od.get(odi).get(odsi)) # TODO: Lookup length
+                                        if n is None:
+                                            n = 0
+                                            s = 0
+                                            e = 1
+                                        elif n > 4:
+                                            s = 1
+                                            e = 0
+                                        else:
+                                            s = 1
+                                            e = 1
+                                        sdo_data = obj.get(odsi)
+                                    elif ccs == SDO_CCS_DOWNLOAD:
+                                        scs = SDO_SCS_DOWNLOAD
+                                        s = (data[0] >> SDO_S_BITNUM) & 1
+                                        e = (data[0] >> SDO_E_BITNUM) & 1
+                                        if e == 1 and s == 1:
+                                            n = (data[0] >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
+                                            obj.update({odsi: int.from_bytes(data[4:8-n], byteorder='little')})
+                                            self.od.update({odi: obj})
+                                        elif e == 1 and s == 0:
+                                            if ODSI_STRUCTURE in obj:
+                                                data_type_index = obj.get(ODSI_STRUCTURE) >> OD_STRUCTURE_DATA_TYPE_BITNUM
+                                                if data_type_index in self.od:
+                                                    data_type_object = self.od.get(data_type_index)
+                                                    if ODSI_VALUE in data_type_object:
+                                                        n = 4 - max(1, data_type_object.get(ODSI_VALUE) // 8)
+                                                        obj.update({odsi: int.from_bytes(data[4:8-n], byteorder='little')})
+                                                        self.od.update({odi: obj})
+                                        elif e == 0 and s == 1:
+                                            self._sdo_buffer = data[4:8]
+                                        else:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL) # e == 0, s == 0 is reserved
+                                        sdo_data = 0
+                                    else:
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_CS)
                                 else:
-                                    scs = SDO_CS_ABORT
-                                    sdo_data = SDO_ABORT_INVALID_CS
+                                    raise SdoAbort(odi, odsi, SDO_ABORT_SUBINDEX_DNE)
                             else:
-                                scs = SDO_CS_ABORT
-                                sdo_data = SDO_ABORT_SUBINDEX_DNE
-                        else:
+                                raise SdoAbort(odi, odsi, SDO_ABORT_OBJECT_DNE)
+                        except SdoAbort as a:
                             scs = SDO_CS_ABORT
-                            sdo_data = SDO_ABORT_OBJECT_DNE
-                    else:
-                        odi = 0x0000
-                        odsi = 0x00
-                        scs = SDO_CS_ABORT
-                        sdo_data = SDO_ABORT_GENERAL # Don't see one specifically for sending not enough data bytes in the CAN msg (malformed SDO msg)
-                    sdo_data = sdo_data.to_bytes(4, byteorder='big')
-                    n = 4 - len(sdo_data)
-                    data = [(scs << SDO_SCS_BITNUM) + (n << SDO_N_BITNUM) + (1 << SDO_E_BITNUM) + (1 << SDO_S_BITNUM), (odi >> 8), (odi & 0xFF), (odsi)] + list(sdo_data)
-                    msg = CAN.Message(sdo_server_id, data)
-                    self._send(msg)
+                            n = 0
+                            s = 0
+                            e = 0
+                            sdo_data = a.code
+                        sdo_data = sdo_data.to_bytes(4, byteorder='little')
+                        data = [(scs << SDO_SCS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM), (odi & 0xFF), (odi >> 8), (odsi)] + list(sdo_data)
+                        msg = CAN.Message(sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID), data)
+                        self._send(msg)
+                        self._process_timers()
                 elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
                     producer_id = id & 0x7F
                     if producer_id in self._heartbeat_consumer_timers:
@@ -710,3 +760,14 @@ class Node:
             if odi >= 0x1000 or odi <= 0x1FFF:
                 self.od.update({odi: object})
         self.boot()
+
+    def trigger_tpdo(self, tpdo): # Event-driven TPDO
+        tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
+        if tpdo_cp is not None:
+            tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+            if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
+                tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                if tpdo_cp_type is not None and (tpdo_cp_type == 0xFE or tpdo_cp_type == 0xFF):
+                    self._send_pdo(tpdo)
+                else:
+                    self._tpdo_triggers[tpdo] = True # Defer until SYNC event
