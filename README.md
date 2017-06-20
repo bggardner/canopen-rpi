@@ -34,18 +34,18 @@ Install and Configure Raspbian
     1. Change `/etc/fstab` to:
 
         ```
-proc            /proc     proc    defaults          0   0
-/dev/mmcblk0p1  /boot     vfat    ro,noatime        0   2
-/dev/mmcblk0p2  /         ext4    defaults,noatime  0   1
-none            /var/log  tmpfs   size=1M,noatime   0   0
+        proc            /proc     proc    defaults          0   0
+        /dev/mmcblk0p1  /boot     vfat    ro,noatime        0   2
+        /dev/mmcblk0p2  /         ext4    defaults,noatime  0   1
+        none            /var/log  tmpfs   size=1M,noatime   0   0
         ```
 
     2. Disable swap memory:
 
         ```
-sudo dphys-swapfile swapoff
-sudo dphys-swapfile uninstall
-sudo update-rc.d dphys-swapfile remove
+        sudo dphys-swapfile swapoff
+        sudo dphys-swapfile uninstall
+        sudo update-rc.d dphys-swapfile remove
         ```
 
     3. Reboot: `sudo reboot`
@@ -64,19 +64,21 @@ Add CAN Support
 2. Configure SPI Module: Change `/boot/config.txt` to:
 
     ```
-dtparam=spi=on
-dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
-dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
-dtoverlay=spi-bcm2835
+    dtparam=spi=on
+    dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
+    dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
+    dtoverlay=spi-bcm2835
     ```
+    *Note: It appears the order of the mcp2515-can\* overlay determines which SPI CE is used (first listing gets spi0.1/CE1, second listing get spi0.0/CE0), even though the documentation says otherwise.  See https://github.com/raspberrypi/linux/issues/1490 for more info.*
+    
     *Note: The `oscillator` and `interrupt` parameters may be different for your application.*
 
 3. Setup CAN interfaces
     * Manual
 
     ```
-sudo ip link set can0 up type can bitrate 1000000
-sudo ip link set can1 up type can bitrate 1000000
+    sudo ip link set can0 up type can bitrate 1000000
+    sudo ip link set can1 up type can bitrate 1000000
     ```
     * Automatic (start at boot-up)
         * Copy [can_if](https://github.com/linux-can/can-misc/blob/master/etc/can_if) to `/etc/init.d/`
@@ -87,7 +89,7 @@ sudo ip link set can1 up type can bitrate 1000000
 4. (Optional) Install `can-utils` for debugging
 
     ```
-sudo apt-get install can-utils
+    sudo apt-get install can-utils
     ```
 
 Library Usage
