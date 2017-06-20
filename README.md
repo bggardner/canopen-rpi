@@ -4,7 +4,7 @@ About
 Modules
 -------
 
-This repository contains two Python modules used for instantiating CANopen nodes on a Raspberry Pi.  The first module, `CAN.py`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `CAN.py` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `CANopen.py`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `CAN.Bus`, a node ID (integer, 1 to 127), and an `CANopen.ObjectDictionary`.
+This repository contains two Python modules used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `CAN.py`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `CAN.py` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `CANopen.py`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `CAN.Bus`, a node ID (integer, 1 to 127), and an `CANopen.ObjectDictionary`.
 
 Node Applications
 -------------------------

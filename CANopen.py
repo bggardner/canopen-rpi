@@ -4,7 +4,9 @@
 
 import CAN
 from collections import Mapping, MutableMapping
+from enum import Enum, IntEnum, unique
 from select import select
+import struct
 from threading import Event, Thread, Timer
 from time import sleep
 
@@ -136,12 +138,10 @@ SDO_N_BITNUM = 3
 SDO_N_LENGTH = 2
 SDO_E_BITNUM = 1
 SDO_S_BITNUM = 0
-SDO_CCS_BITNUM = 5
-SDO_CCS_LENGTH = 3
+SDO_CS_BITNUM = 5
+SDO_CS_LENGTH = 3
 SDO_CCS_DOWNLOAD = 1
 SDO_CCS_UPLOAD = 2
-SDO_SCS_BITNUM = 5
-SDO_SCS_LENGTH = 3
 SDO_SCS_DOWNLOAD = 3
 SDO_SCS_UPLOAD = 2
 SDO_CS_ABORT = 4
@@ -153,6 +153,22 @@ SDO_ABORT_GENERAL = 0x08000000
 # PDO
 TPDO_COMM_PARAM_ID_VALID_BITNUM = 31
 TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
+
+class Object:
+    def __init__(self):
+        pass
+
+    def factory(cls, entry: str):
+        pass
+
+class NullObject(Object):
+    pass
+
+class DomainObject(Object):
+    pass
+
+class DeftypeObject(Object):
+    pass
 
 class ObjectDictionary(MutableMapping):
     def __init__(self, other=None, **kwargs):
@@ -323,15 +339,101 @@ class ObjectDictionary(MutableMapping):
             for index, obj in kwargs.items():
                 self[index] = obj
 
+    def fromEds(filename):
+        raise NotImplementedError #TODO
+
+@unique
+class ObjectType(IntEnum):
+    NULL = OD_OBJECT_TYPE_NULL
+    DOMAIN = OD_OBJECT_TYPE_DOMAIN
+    DEFTYPE = OD_OBJECT_TYPE_DEFTYPE
+    DEFSTRUCT = OD_OBJECT_TYPE_DEFSTRUCT
+    VAR = OD_OBJECT_TYPE_VAR
+    ARRAY = OD_OBJECT_TYPE_ARRAY
+    RECORD = OD_OBJECT_TYPE_RECORD
+
+@unique
+class AccessType(Enum):
+    RO = "ro"
+    WO = "wo"
+    RW = "rw"
+    RWR = "rwr"
+    CONST = "const"
+
+class DataType:
+    pass
+
+class ObjectStructure:
+    def __init__(self, data_type: DataType, object_type: ObjectType):
+        self.data_type = data_type
+        self.object_type = object_type
+
 class Object(MutableMapping):
-    def __init__(self, other=None, **kwargs):
-        self._store = dict()
-        self.update(dict(other, **kwargs))
-        if ODSI_VALUE not in self:
-            raise RuntimeError("CANopen object sub-index " + ODSI_VALUE + " is required")
+    def __init__(self, **kwargs):
+        if "sub_number" in kwargs and kwargs["sub_number"] is not None:
+            if not isinstance(kwargs["sub_number"], int):
+                raise TypeError
+            if kwargs["sub_number"] not in range(0xFF):
+                raise ValueError
+            self.sub_number = kwargs["sub_number"]
+        else:
+            self.sub_number = 0
+        if "parameter_name" not in kwargs:
+            raise ValueError
+        if kwargs["parameter_name"] is not None:
+            if not isinstance(kwargs["parameter_name"], str):
+                raise TypeError
+            if len(kwargs["parameter_name"]) > 241:
+                raise ValueError
+        self.parameter_name = kwargs["parameter_name"]
+        if "object_type" in kwargs and kwargs["object_type"] is not None:
+            object_type = ObjectType(kwargs["object_type"])
+        else:
+            object_type = ObjectType.VAR
+        if "data_type" not in kwargs and self.sub_number != 0:
+            raise ValueError
+        data_type = DataType(kwargs["data_type"])
+        structure = ObjectStructure(data_type, object_type)
+        if "low_limit" in kwargs:
+            self.low_limit = kwargs["low_limit"]
+        else:
+            self.low_limit = None
+        if "high_limit" in kwargs:
+            self.high_limit = kwargs["high_limit"]
+        else:
+            self.high_limit = None
+        if "access_type" not in kwargs:
+            raise ValueError
+        self.access_type = AccessType(kwargs["access_type"])
+        if "default_value" not in kwargs:
+            raise ValueError
+        self.default_value = kwargs["default_value"]
+        if "pdo_mapping" not in kwargs and kwargs["pdo_mapping"] not in [True, False]:
+            raise ValueError
+        self.pdo_mapping = bool(kwargs["pdo_mapping"])
+        if "obj_flags" in kwargs:
+            self.obj_flags = kwargs["obj_flags"]
+        else:
+            self.obj_flags = None
+
+        if self.sub_number == 0:
+            self._store = {ODSI_VALUE: self.default_value, ODSI_STRUCTURE: structure}
+        else:
+            self._store = {ODSI_VALUE: self.sub_number, ODSI_STRUCTURE: structure}
+            if "subs" not in kwargs:
+                raise ValueError
+            if not isinstance(kwargs["subs"], dict):
+                raise TypeError
+            if not all(k in range(1, 0xFF) for k in kwargs["subs"].keys()):
+                raise ValueError
+            if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
+                raise TypeError
+            self._store.update(kwargs["subs"])
 
     def __getitem__(self, subindex):
-        # TODO: Prevent reading of write-only indices
+        if subindex == 0 and self.sub_number == 0:
+            if self.access_type == AccessType.WO:
+                raise AttributeError
         return self._store[subindex]
 
     def __setitem__(self, subindex, value):
@@ -378,6 +480,13 @@ class Object(MutableMapping):
                 self[subindex] = value
             for subindex, value in kwargs.items():
                 self[subindex] = value
+
+class SubObject(Object):
+    def __init__(self, **kwargs):
+        super().__init__(kwargs)
+        del self.sub_number
+        del self.subs
+        self.value = self.default_value
 
 class IntervalTimer(Thread):
     def __init__(self, interval, function, args=None, kwargs=None):
@@ -457,11 +566,145 @@ class RunIndicator(Indicator):
         indicator_state = self._get_state(nmt_state)
         super().set_state(indicator_state)
 
+class Message(CAN.Message):
+    @classmethod
+    def factory(cls, msg: CAN.Message):
+        fc = msg.arbitration_id >> FUNCTION_CODE_BITNUM
+        node_id = msg.arbitration_id & 0x3F
+        if fc == FUNCTION_CODE_NMT:
+            return NmtMessage.factory(node_id, msg.data)
+        if fc == FUNCTION_CODE_SDO_TX:
+            return SdoResponse.factory(node_id, msg.data)
+        if fc == FUNCTION_CODE_SDO_RX:
+            return SdoRequest.factory(node_id, msg.data)
+        raise NotImplementedError
+
+class NmtMessage(Message):
+    def __init__(self, command, data):
+        arbitration_id = (FUNCTION_CODE_NMT << FUNCTION_CODE_BITNUM) + command
+        super().__init__(arbitration_id, data)
+
+    @classmethod
+    def factory(cls, cmd, data):
+        if cmd == NMT_NODE_CONTROL:
+            return NmtNodeControlMessage.factory(data)
+        if cmd == NMT_GFC:
+            return NmtGfcMessage()
+        raise NotImplementedError
+
+class NmtNodeControlMessage(NmtMessage):
+    def __init__(self, cmd, target_id):
+        data = struct.pack("<BB", cmd, target_id)
+        super().__init__(NMT_NODE_CONTROL, data)
+
+    @classmethod
+    def factory(cls, data):
+        cmd, target_id = struct.unpack("<BB", data)
+        return cls(cmd, target_id)
+
+class NmtGfcMessage(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_GFC, bytes())
+
+class SdoMessage(Message):
+    def __init__(self, arbitration_id, cs, n, e, s, index, subindex, data):
+        data = struct.pack("<BHBI", (cs << SDO_CS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM) + (s << SDO_S_BITNUM), index, subindex, data)
+        super().__init__(arbitration_id, data)
+
+    @property
+    def node_id(self):
+        return self.arbitration_id & 0x7F
+
+    @property
+    def n(self):
+        return (self.data[0] >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
+
+    @property
+    def e(self):
+        return bool(self.data[0] & SDO_E_BITNUM)
+
+    @property
+    def s(self):
+        return bool(self.data[0] & SDO_S_BITNUM)
+
+    @property
+    def index(self):
+        return struct.unpack("<H", self.data[1:3])[0]
+
+    @property
+    def subindex(self):
+        return struct.unpack("<B", self.data[3:4])[0]
+
+    @property
+    def sdo_data(self):
+        return struct.unpack("<I", self.data[4:])[0]
+
+class SdoRequest(SdoMessage):
+    def __init__(self, node_id, cs, n, e, s, index, subindex, data):
+        arbitration_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + node_id
+        super().__init__(arbitration_id, cs, n, e, s, index, subindex, data)
+
+    @classmethod
+    def factory(cls, node_id, data):
+        cmd, index, subindex, data = struct.unpack("<BHBI", data)
+        cs = (cmd >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
+        n = (cmd >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
+        e = (cmd >> SDO_E_BITNUM) & 1
+        s = (cmd >> SDO_S_BITNUM) & 1
+        if cs == SDO_CCS_DOWNLOAD:
+            return SdoDownloadRequest(node_id, n, e, s, index, subindex, data)
+        if cs == SDO_CCS_UPLOAD:
+            return SdoUploadRequest(node_id, index, subindex)
+        raise Exception
+
+class SdoResponse(SdoMessage):
+    def __init__(self, node_id, cs, n, e, s, index, subindex, data):
+        arbitration_id = (FUNCTION_CODE_SDO_TX << FUNCTION_CODE_BITNUM) + node_id
+        super().__init__(arbitration_id, cs, n, e, s, index, subindex, data)
+
+    @classmethod
+    def factory(cls, node_id, data):
+        cmd, index, subindex, data = struct.unpack("<BHBI", data)
+        cs = (cmd >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
+        n = (cmd >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
+        e = (cmd >> SDO_E_BITNUM) & 1
+        s = (cmd >> SDO_S_BITNUM) & 1
+        if cs == SDO_CS_ABORT:
+            return SdoAbortResponse(node_id, index, subindex, data)
+        if cs == SDO_SCS_DOWNLOAD:
+            return SdoDownloadResponse(node_id, index, subindex)
+        if cs == SDO_SCS_UPLOAD:
+            return SdoUploadResponse(node_id, n, e, s, index, subindex, data)
+        raise Exception
+
+class SdoAbortResponse(SdoResponse):
+    def __init__(self, node_id, index, subindex, abort_code):
+        super().__init__(node_id, SDO_CS_ABORT, 0, 0, 0, index, subindex, abort_code)
+
+class SdoDownloadRequest(SdoRequest):
+    def __init__(self, node_id, n, e, s, index, subindex, data):
+        super().__init__(node_id, SDO_CCS_DOWNLOAD, n, e, s, index, subindex, data)
+
+class SdoDownloadResponse(SdoResponse):
+    def __init__(self, node_id, index, subindex):
+        super().__init__(node_id, SDO_SCS_DOWNLOAD, 0, 0, 0, index, subindex, 0)
+
+class SdoUploadRequest(SdoRequest):
+    def __init__(self, node_id, index, subindex):
+        super().__init__(node_id, SDO_CCS_UPLOAD, 0, 0, 0, index, subindex, 0)
+
+class SdoUploadResponse(SdoResponse):
+    def __init__(self, node_id, n, e, s, index, subindex, data):
+        super().__init__(node_id, SDO_SCS_UPLOAD, n, e, s, index, subindex, data)
+
 class SdoAbort(Exception):
     def __init__(self, odi, odsi, code):
         self.odi = odi
         self.odsi = odsi
         self.code = code
+
+class SdoTimeout(Exception):
+    pass
 
 class Node:
     def __init__(self, bus: CAN.Bus, id, od: ObjectDictionary, *args, **kwargs):
@@ -625,20 +868,29 @@ class Node:
         data = msg.data
         rtr = msg.is_remote_frame
         fc = (id >> FUNCTION_CODE_BITNUM) & 0xF
-        if rtr:
+        if rtr: # CiA recommendeds against using RTRs, but they are still supported
             target_node = id & 0x7F
             if target_node == self.id or target_node == BROADCAST_NODE_ID:
                 if self.nmt_state == NMT_STATE_OPERATIONAL:
+                    tpdo = None
                     if fc == FUNCTION_CODE_TPDO1:
-                        tpdo1_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER)
-                        if tpdo1_cp is not None:
-                            tpdo1_cp_id = tpdo1_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                            if tpdo1_cp_id is not None and (tpdo1_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo1_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
-                                tpdo1_cp_type = tpdo1_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                                if tpdo1_cp_type == 0xFC:
+                        tpdo = 1
+                    elif fc == FUNCTION_CODE_TPDO2:
+                        tpdo = 2
+                    elif fc == FUNCTION_CODE_TPDO3:
+                        tpdo = 3
+                    elif fc == FUNCTION_CODE_TPDO4:
+                        tpdo = 4
+                    if tpdo is not None:
+                        tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
+                        if tpdo_cp is not None:
+                            tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                            if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
+                                tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                                if tpdo_cp_type == 0xFC:
                                     self._tpdo_triggers[0] = True; # Defer until SYNC event
-                                elif tpdo1_cp_type == 0xFD:
-                                    self._send_pdo(1)
+                                elif tpdo_cp_type == 0xFD:
+                                    self._send_pdo(tpdo)
                 elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
                     self._send_heartbeat()
         elif fc == FUNCTION_CODE_NMT:
@@ -677,7 +929,7 @@ class Node:
                 if sdo_server_id is not None and id == sdo_server_id:
                     if len(data) == 8:
                         try:
-                            ccs = (data[0] >> SDO_CCS_BITNUM) & (2 ** SDO_CCS_LENGTH - 1)
+                            ccs = (data[0] >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
                             odi = (data[2] << 8) + data[1]
                             odsi = data[3]
                             if odi in self.od:
@@ -732,7 +984,7 @@ class Node:
                             e = 0
                             sdo_data = a.code
                         sdo_data = sdo_data.to_bytes(4, byteorder='little')
-                        data = [(scs << SDO_SCS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM), (odi & 0xFF), (odi >> 8), (odsi)] + list(sdo_data)
+                        data = [(scs << SDO_CS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM), (odi & 0xFF), (odi >> 8), (odsi)] + list(sdo_data)
                         msg = CAN.Message(sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID), data)
                         self._send(msg)
                         self._process_timers()
