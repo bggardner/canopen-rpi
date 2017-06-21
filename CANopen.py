@@ -154,22 +154,6 @@ SDO_ABORT_GENERAL = 0x08000000
 TPDO_COMM_PARAM_ID_VALID_BITNUM = 31
 TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
 
-class Object:
-    def __init__(self):
-        pass
-
-    def factory(cls, entry: str):
-        pass
-
-class NullObject(Object):
-    pass
-
-class DomainObject(Object):
-    pass
-
-class DeftypeObject(Object):
-    pass
-
 class ObjectDictionary(MutableMapping):
     def __init__(self, other=None, **kwargs):
         self._store = { # Defaults
@@ -361,7 +345,8 @@ class AccessType(Enum):
     CONST = "const"
 
 class DataType:
-    pass
+    def __init__(self, *args, **kwargs):
+        pass
 
 class ObjectStructure:
     def __init__(self, data_type: DataType, object_type: ObjectType):
@@ -370,16 +355,7 @@ class ObjectStructure:
 
 class Object(MutableMapping):
     def __init__(self, **kwargs):
-        if "sub_number" in kwargs and kwargs["sub_number"] is not None:
-            if not isinstance(kwargs["sub_number"], int):
-                raise TypeError
-            if kwargs["sub_number"] not in range(0xFF):
-                raise ValueError
-            self.sub_number = kwargs["sub_number"]
-        else:
-            self.sub_number = 0
-        if "parameter_name" not in kwargs:
-            raise ValueError
+        # See Table 1 of CiA 306-1
         if kwargs["parameter_name"] is not None:
             if not isinstance(kwargs["parameter_name"], str):
                 raise TypeError
@@ -390,41 +366,70 @@ class Object(MutableMapping):
             object_type = ObjectType(kwargs["object_type"])
         else:
             object_type = ObjectType.VAR
-        if "data_type" not in kwargs and self.sub_number != 0:
-            raise ValueError
-        data_type = DataType(kwargs["data_type"])
+        if "data_type" not in kwargs:
+            if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+                raise ValueError
+            elif object_type == ObjectType.DOMAIN:
+                data_type = DataType("DOMAIN") # TODO
+            else:
+                data_type = None
+        else:
+            data_type = DataType(kwargs["data_type"])
         structure = ObjectStructure(data_type, object_type)
-        if "low_limit" in kwargs:
+        if "access_type" not in kwargs:
+            if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+                raise ValueError
+            elif object_type == ObjectType.DOMAIN:
+                access_type = AccessType.RW
+            else:
+                access_type = None
+        else:
+            self.access_type = AccessType(kwargs["access_type"])
+        if "default_value" in kwargs and object_type in [ObjectType.DEFTYPE, ObjectType.VAR, ObjectType.DOMAIN] and "default_value" not in kwargs:
+            self.default_value = kwargs["default_value"]
+        else:
+            self.default_value = None
+        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+            if "pdo_mapping" not in kwargs:
+                self.pdo_mapping = False
+            elif kwargs["pdo_mapping"] not in [True, False]:
+                raise ValueError
+            else:
+                self.pdo_mapping = bool(kwargs["pdo_mapping"])
+        else:
+            self.pdo_mapping = None
+        if object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]:
+            if "sub_number" not in kwargs:
+                raise ValueError
+            if not isinstance(kwargs["sub_number"], int):
+                raise TypeError
+            if kwargs["sub_number"] not in range(0xFF):
+                raise ValueError
+            self.sub_number = kwargs["sub_number"]
+        else:
+            self.sub_number = None
+        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "low_limit" in kwargs:
             self.low_limit = kwargs["low_limit"]
         else:
             self.low_limit = None
-        if "high_limit" in kwargs:
+        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "high_limit" in kwargs:
             self.high_limit = kwargs["high_limit"]
         else:
             self.high_limit = None
-        if "access_type" not in kwargs:
-            raise ValueError
-        self.access_type = AccessType(kwargs["access_type"])
-        if "default_value" not in kwargs:
-            raise ValueError
-        self.default_value = kwargs["default_value"]
-        if "pdo_mapping" not in kwargs and kwargs["pdo_mapping"] not in [True, False]:
-            raise ValueError
-        self.pdo_mapping = bool(kwargs["pdo_mapping"])
         if "obj_flags" in kwargs:
             self.obj_flags = kwargs["obj_flags"]
         else:
-            self.obj_flags = None
+            self.obj_flags = 0
 
-        if self.sub_number == 0:
+        if self.sub_number is None:
             self._store = {ODSI_VALUE: self.default_value, ODSI_STRUCTURE: structure}
         else:
-            self._store = {ODSI_VALUE: self.sub_number, ODSI_STRUCTURE: structure}
+            self._store = {ODSI_STRUCTURE: structure}
             if "subs" not in kwargs:
                 raise ValueError
             if not isinstance(kwargs["subs"], dict):
                 raise TypeError
-            if not all(k in range(1, 0xFF) for k in kwargs["subs"].keys()):
+            if not all(k in range(0, 0xFF) for k in kwargs["subs"].keys()):
                 raise ValueError
             if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
                 raise TypeError
@@ -483,9 +488,8 @@ class Object(MutableMapping):
 
 class SubObject(Object):
     def __init__(self, **kwargs):
-        super().__init__(kwargs)
-        del self.sub_number
-        del self.subs
+        kwargs["object_type"] = ObjectType.VAR
+        super().__init__(**kwargs)
         self.value = self.default_value
 
 class IntervalTimer(Thread):
@@ -567,22 +571,40 @@ class RunIndicator(Indicator):
         super().set_state(indicator_state)
 
 class Message(CAN.Message):
+    def __init__(self, fc, node_id, data=[]):
+        arbitration_id = (fc << FUNCTION_CODE_BITNUM) + node_id
+        super().__init__(arbitration_id, data)
+
     @classmethod
     def factory(cls, msg: CAN.Message):
         fc = msg.arbitration_id >> FUNCTION_CODE_BITNUM
         node_id = msg.arbitration_id & 0x3F
         if fc == FUNCTION_CODE_NMT:
             return NmtMessage.factory(node_id, msg.data)
+        if fc == FUNCTION_CODE_SYNC:
+            if node_id == 0x00:
+                return SyncMessage()
+            else:
+                return EmcyMessage()
+        if fc == FUNCTION_CODE_TPDO1:
+            return PdoMessage(fc, node_id, msg.data)
+        if fc == FUNCTION_CODE_TPDO1:
+            return PdoMessage(fc, node_id, msg.data)
+        if fc == FUNCTION_CODE_TPDO1:
+            return PdoMessage(fc, node_id, msg.data)
+        if fc == FUNCTION_CODE_TPDO1:
+            return PdoMessage(fc, node_id, msg.data)
         if fc == FUNCTION_CODE_SDO_TX:
             return SdoResponse.factory(node_id, msg.data)
         if fc == FUNCTION_CODE_SDO_RX:
             return SdoRequest.factory(node_id, msg.data)
+        if fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
+            return NmtErrorControlMessage.factory(node_id, msg.data)
         raise NotImplementedError
 
 class NmtMessage(Message):
     def __init__(self, command, data):
-        arbitration_id = (FUNCTION_CODE_NMT << FUNCTION_CODE_BITNUM) + command
-        super().__init__(arbitration_id, data)
+        super().__init__(FUNCTION_CODE_NMT, command, data)
 
     @classmethod
     def factory(cls, cmd, data):
@@ -606,10 +628,22 @@ class NmtGfcMessage(NmtMessage):
     def __init__(self):
         super().__init__(NMT_GFC, bytes())
 
+class SyncMessage(Message):
+    def __init__(self):
+        super().__init__(FUNCTION_CODE_SYNC, 0x00)
+
+class EmcyMessage(Message):
+    def __init__(self, node_id, data):
+        super().__init__(FUNCTION_CODE_EMCY, node_id, data)
+
+class PdoMessage(Message):
+    def __init__(self, fc, node_id, data):
+        super().__init__(fc, node_id, data)
+
 class SdoMessage(Message):
-    def __init__(self, arbitration_id, cs, n, e, s, index, subindex, data):
+    def __init__(self, fc, node_id, cs, n, e, s, index, subindex, data):
         data = struct.pack("<BHBI", (cs << SDO_CS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM) + (s << SDO_S_BITNUM), index, subindex, data)
-        super().__init__(arbitration_id, data)
+        super().__init__(fc, node_id, data)
 
     @property
     def node_id(self):
@@ -641,8 +675,7 @@ class SdoMessage(Message):
 
 class SdoRequest(SdoMessage):
     def __init__(self, node_id, cs, n, e, s, index, subindex, data):
-        arbitration_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + node_id
-        super().__init__(arbitration_id, cs, n, e, s, index, subindex, data)
+        super().__init__(FUNCTION_CODE_SDO_RX, node_id, cs, n, e, s, index, subindex, data)
 
     @classmethod
     def factory(cls, node_id, data):
@@ -659,12 +692,11 @@ class SdoRequest(SdoMessage):
 
 class SdoResponse(SdoMessage):
     def __init__(self, node_id, cs, n, e, s, index, subindex, data):
-        arbitration_id = (FUNCTION_CODE_SDO_TX << FUNCTION_CODE_BITNUM) + node_id
-        super().__init__(arbitration_id, cs, n, e, s, index, subindex, data)
+        super().__init__(FUNCTION_CODE_SDO_TX, node_id, cs, n, e, s, index, subindex, data)
 
     @classmethod
     def factory(cls, node_id, data):
-        cmd, index, subindex, data = struct.unpack("<BHBI", data)
+        cmd, index, subindex, data = struct.unpack("<BHBI", data.ljust(8, b'\x00'))
         cs = (cmd >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
         n = (cmd >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
         e = (cmd >> SDO_E_BITNUM) & 1
@@ -696,6 +728,25 @@ class SdoUploadRequest(SdoRequest):
 class SdoUploadResponse(SdoResponse):
     def __init__(self, node_id, n, e, s, index, subindex, data):
         super().__init__(node_id, SDO_SCS_UPLOAD, n, e, s, index, subindex, data)
+
+class NmtErrorControlMessage(Message):
+    def __init__(self, node_id, data):
+        super().__init__(FUNCTION_CODE_NMT_ERROR_CONTROL, node_id, data)
+
+    @classmethod
+    def factory(self, node_id, data):
+        if data[0] == NMT_STATE_INITIALISATION:
+            return BootupMessage(node_id)
+        else:
+            return HeartbeatMessage(node_id, data[0])
+
+class BootupMessage(NmtErrorControlMessage):
+    def __init__(self, node_id):
+        super().__init__(node_id, bytearray([NMT_STATE_INITIALISATION]))
+
+class HeartbeatMessage(NmtErrorControlMessage):
+    def __init__(self, node_id, nmt_state):
+        super().__init__(node_id, bytearray([nmt_state]))
 
 class SdoAbort(Exception):
     def __init__(self, odi, odsi, code):
@@ -800,7 +851,8 @@ class Node:
         self._send(msg)
 
     def _send_heartbeat(self):
-        msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id, [self.nmt_state])
+        msg = HeartbeatMessage(self.node_id, self.nmt_state)
+        #msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id, [self.nmt_state])
         self._send(msg)
 
     def _send_pdo(self, i):

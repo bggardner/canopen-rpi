@@ -8,8 +8,8 @@ import signal
 from time import sleep
 from sys import exit
 
-DEFAULT_CAN_INTERFACE = "vcan0"
-REDUNDANT_CAN_INTERFACE = "vcan1"
+DEFAULT_CAN_INTERFACE = "can0"
+REDUNDANT_CAN_INTERFACE = "can1"
 
 PIN_ENABLE_N = 42
 PIN_ADDRESS_N = list(range(34, 41))
@@ -18,13 +18,6 @@ PIN_RUNLED0 = 2
 PIN_ERRLED0 = 3
 PIN_RUNLED1 = 4
 PIN_ERRLED1 = 5
-
-#DEBUG on non-RPi ONLY
-from platform import machine
-if machine()[:3] != "arm":
-    GPIO.output(PIN_ENABLE_N, 0)
-    GPIO.output(PIN_ADDRESS_N[0], 0)
-    GPIO.output(PIN_ADDRESS_PARITY_N, 0)
 
 def sigterm_handler(signum, frame):
     GPIO.cleanup()
@@ -55,6 +48,8 @@ class ResetCommunication(Exception):
 while True:
     try:
         if GPIO.input(PIN_ENABLE_N) == GPIO.HIGH:
+            print("Enable_n is high")
+            sleep(1)
             raise ResetNode
         while True:
             try:
@@ -68,6 +63,8 @@ while True:
                     GPIO.input(PIN_ADDRESS_N[0])]
                 address_parity_n = reduce(xor, address_n)
                 if address_parity_n != GPIO.input(PIN_ADDRESS_PARITY_N):
+                    print("Address parity mismatch")
+                    sleep(1)
                     raise ResetCommunication
 
                 node_id = 0
@@ -80,18 +77,44 @@ while True:
                     CANopen.ODI_SYNC: 0x40000000 + (CANopen.FUNCTION_CODE_SYNC << CANopen.FUNCTION_CODE_BITNUM),
                     CANopen.ODI_SYNC_TIME: 0, # 32-bit, in us
                     CANopen.ODI_EMCY_ID: (CANopen.FUNCTION_CODE_EMCY << CANopen.FUNCTION_CODE_BITNUM) + node_id,
-                    CANopen.ODI_HEARTBEAT_CONSUMER_TIME: CANopen.Object({
-                        CANopen.ODSI_VALUE: 1,
-                        CANopen.ODSI_HEARTBEAT_CONSUMER_TIME: 2000, # all nodes, 16-bit, in ms
-                    }),
+                    CANopen.ODI_HEARTBEAT_CONSUMER_TIME: CANopen.Object(
+                        parameter_name="Consumer Heartbeat Time",
+                        object_type=CANopen.ObjectType.ARRAY,
+                        sub_number=1,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="Number of Entries",
+                                access_type=CANopen.AccessType.RO,
+                                data_type="",
+                                default_value=1,
+                            ),
+                            CANopen.ODSI_HEARTBEAT_CONSUMER_TIME: CANopen.SubObject(
+                                parameter_name="Consumer Heartbeat Time",
+                                access_type=CANopen.AccessType.RO,
+                                data_type="",
+                                default_value=2000,
+                            ), # all nodes, 16-bit, in ms
+                        }
+                    ),
                     CANopen.ODI_HEARTBEAT_PRODUCER_TIME: 1000, # 16-bit, in ms
-                    CANopen.ODI_IDENTITY: CANopen.Object({
-                        CANopen.ODSI_VALUE: 4,
-                        CANopen.ODSI_IDENTITY_VENDOR: 0x00000000,
-                        CANopen.ODSI_IDENTITY_PRODUCT: 0x00000001,
-                        CANopen.ODSI_IDENTITY_REVISION: 0x00000000,
-                        CANopen.ODSI_IDENTITY_SERIAL: 0x00000001,
-                    }),
+                    CANopen.ODI_IDENTITY: CANopen.Object(
+                        parameter_name="Identity Object",
+                        object_type=CANopen.ObjectType.ARRAY,
+                        sub_number=4,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="number of entries",
+                                access_type=AccessType.RO,
+                                low_limit=1,
+                                high_limit=4,
+                                default_value=None
+                            ),
+                            CANopen.ODSI_IDENTITY_VENDOR: 0x00000000,
+                            CANopen.ODSI_IDENTITY_PRODUCT: 0x00000001,
+                            CANopen.ODSI_IDENTITY_REVISION: 0x00000000,
+                            CANopen.ODSI_IDENTITY_SERIAL: 0x00000001,
+                        }
+                    ),
                     CANopen.ODI_SDO_SERVER: CANopen.Object({
                         CANopen.ODSI_VALUE: 2,
                         CANopen.ODSI_SDO_SERVER_DEFAULT_CSID: (CANopen.FUNCTION_CODE_SDO_RX << CANopen.FUNCTION_CODE_BITNUM) + node_id,

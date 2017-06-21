@@ -15,15 +15,15 @@ from time import sleep, time
 import traceback
 from urllib.parse import parse_qs, urlparse
 
-CAN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
+CAN_INTERFACES = ["can0", "can1"] # Must be a list
 HTTP_SERVER_IP_ADDRESS = "" # Empty string for any address
 HTTP_SERVER_PORT = 8002
 WWW_DIR = path.dirname(path.realpath(__file__))
 
-default_net = "vcan0" # When 'default' net is specified
+default_net = "can0" # When 'default' net is specified
 default_node_id = 0xFF # 0xFF = Invalid
 command_timeout = 1 # In seconds (value sent in ms)
-sdo_timeout = 10 # In seconds (value sent in ms)
+sdo_timeout = 1 # In seconds (value sent in ms)
 
 def sigterm_handler(signum, frame):
     sys.exit()
@@ -137,7 +137,7 @@ def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest) -> CANopen.SdoResponse:
             response = CANopen.Message.factory(bus.recv())
             if isinstance(response, CANopen.SdoResponse) and response.node_id == request.node_id and response.index == request.index and response.subindex == request.subindex:
                 if isinstance(response, CANopen.SdoAbortResponse):
-                    raise CANopen.SdoAbort(response.sdo_data)
+                    raise CANopen.SdoAbort(response.index, response.subindex, response.sdo_data)
                 if isinstance(request, CANopen.SdoUploadRequest) and isinstance(response, CANopen.SdoUploadResponse):
                     return response
                 if isinstance(request, CANopen.SdoDownloadRequest) and isinstance(response, CANopen.SdoDownloadResponse):
@@ -172,7 +172,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 try:
                     sequence, net, node, command = parse_request(request)
                 except Exception as e:
-                    raise BadRequest(e)
+                    raise BadRequest(str(e))
 
                 command_response = {"sequence": str(sequence)}
 
@@ -255,7 +255,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
                             req = CANopen.SdoUploadRequest(node_id, index, subindex)
                             res = exec_sdo(bus, req)
-                            command_response["data"] = "{:08X}".format(res.sdo_data)
+                            command_response["data"] = "0x{:08X}".format(res.sdo_data)
                             command_response["length"] = "u32" # Lookup data type in EDS?
 
                     elif command_specifier == 'w' or command_specifier == 'write':
