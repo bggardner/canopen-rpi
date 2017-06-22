@@ -85,15 +85,19 @@ while True:
                             CANopen.ODSI_VALUE: CANopen.SubObject(
                                 parameter_name="Number of Entries",
                                 access_type=CANopen.AccessType.RO,
-                                data_type="",
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=1,
+                                high_limit=127,
                                 default_value=1,
                             ),
                             CANopen.ODSI_HEARTBEAT_CONSUMER_TIME: CANopen.SubObject(
                                 parameter_name="Consumer Heartbeat Time",
                                 access_type=CANopen.AccessType.RO,
-                                data_type="",
-                                default_value=2000,
-                            ), # all nodes, 16-bit, in ms
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=2000 # all nodes, 16-bit, in ms
+                            ),
                         }
                     ),
                     CANopen.ODI_HEARTBEAT_PRODUCER_TIME: 1000, # 16-bit, in ms
@@ -104,35 +108,139 @@ while True:
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
                                 parameter_name="number of entries",
-                                access_type=AccessType.RO,
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
                                 low_limit=1,
                                 high_limit=4,
-                                default_value=None
+                                default_value=4
                             ),
-                            CANopen.ODSI_IDENTITY_VENDOR: 0x00000000,
-                            CANopen.ODSI_IDENTITY_PRODUCT: 0x00000001,
-                            CANopen.ODSI_IDENTITY_REVISION: 0x00000000,
-                            CANopen.ODSI_IDENTITY_SERIAL: 0x00000001,
+                            CANopen.ODSI_IDENTITY_VENDOR: CANopen.SubObject(
+                                parameter_name="Vendor ID",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=0x00000000
+                            ),
+                            CANopen.ODSI_IDENTITY_PRODUCT: CANopen.SubObject(
+                                parameter_name="Product code",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=0x00000001
+                            ),
+                            CANopen.ODSI_IDENTITY_REVISION: CANopen.SubObject(
+                                parameter_name="Revision number",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=0x00000000
+                            ),
+                            CANopen.ODSI_IDENTITY_SERIAL: CANopen.SubObject(
+                                parameter_name="Serial number",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=0x00000001
+                            )
                         }
                     ),
-                    CANopen.ODI_SDO_SERVER: CANopen.Object({
-                        CANopen.ODSI_VALUE: 2,
-                        CANopen.ODSI_SDO_SERVER_DEFAULT_CSID: (CANopen.FUNCTION_CODE_SDO_RX << CANopen.FUNCTION_CODE_BITNUM) + node_id,
-                        CANopen.ODSI_SDO_SERVER_DEFAULT_SCID: (CANopen.FUNCTION_CODE_SDO_TX << CANopen.FUNCTION_CODE_BITNUM) + node_id,
-                    }),
-                    CANopen.ODI_SDO_CLIENT: CANopen.Object({
-                        CANopen.ODSI_VALUE: 0, # Update when heartbeats received
-                    }),
-                    CANopen.ODI_TPDO1_COMMUNICATION_PARAMETER: CANopen.Object({
-                        CANopen.ODSI_VALUE: 2,
-                        CANopen.ODSI_TPDO_COMM_PARAM_ID: node_id,
-                        CANopen.ODSI_TPDO_COMM_PARAM_TYPE: 1, # synchronous
-                    }),
-                    CANopen.ODI_TPDO1_MAPPING_PARAMETER: CANopen.Object({
-                        CANopen.ODSI_VALUE: 2,
-                        0x01: (CANopen.ODI_SYNC << 16) + (CANopen.ODSI_VALUE << 8) + 32,
-                        0x02: (CANopen.ODI_SYNC_TIME << 16) + (CANopen.ODSI_VALUE << 8) + 32,
-                    }),
+                    CANopen.ODI_SDO_SERVER: CANopen.Object(
+                        parameter_name="Server SDO parameter",
+                        object_type=CANopen.ObjectType.RECORD,
+                        sub_number=2,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="number of entries",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=2,
+                                high_limit=2,
+                                default_value=2
+                                ),
+                            CANopen.ODSI_SDO_SERVER_DEFAULT_CSID: CANopen.SubObject(
+                                parameter_name="COB-ID Client->Server (rx)",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=(CANopen.FUNCTION_CODE_SDO_RX << CANopen.FUNCTION_CODE_BITNUM) + node_id
+                            ),
+                            CANopen.ODSI_SDO_SERVER_DEFAULT_SCID: CANopen.SubObject(
+                                parameter_name="COB-ID Server->Client (tx)",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=(CANopen.FUNCTION_CODE_SDO_TX << CANopen.FUNCTION_CODE_BITNUM) + node_id
+                            ),
+                        }
+                    ), #TODO: add Client SDO parameter Object(s)
+                    CANopen.ODI_TPDO1_COMMUNICATION_PARAMETER: CANopen.Object(
+                        parameter_name="transmit PDO parameter",
+                        object_type=CANopen.ObjectType.RECORD,
+                        sub_number=2,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="largest sub-index supported",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limt=2,
+                                high_limit=5,
+                                default_value=2
+                            ),
+                            CANopen.ODSI_TPDO_COMM_PARAM_ID: CANopen.SubObject(
+                                parameter_name="COB-ID used by PDO",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=node_id
+                            ),
+                            CANopen.ODSI_TPDO_COMM_PARAM_TYPE: CANopen.SubObject(
+                                parameter_name="transmission type",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x00,
+                                high_limit=0xFF,
+                                default_value=1 # synchronous
+                            )
+                        }
+                    ),
+                    CANopen.ODI_TPDO1_MAPPING_PARAMETER: CANopen.Object(
+                        parameter_name="transmit PDO mapping",
+                        object_type=CANopen.ObjectType.RECORD,
+                        sub_number=2,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="number of mapped application objects in PDO",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x00,
+                                high_limit=0x40,
+                                default_value=2
+                            ),
+                            0x01: CANopen.SubObject(
+                                parameter_name="PDO mapping for the 1st application object to be mapped",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=(CANopen.ODI_SYNC << 16) + (CANopen.ODSI_VALUE << 8) + 32
+                            ),
+                            0x02: CANopen.SubObject(
+                                parameter_name="PDO mapping for the 2nd application object to be mapped",
+                                access_type=CANopen.AccessType.RO,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=(CANopen.ODI_SYNC_TIME << 16) + (CANopen.ODSI_VALUE << 8) + 32
+                            ),
+                        }
+                    ),
                 })
 
                 try:

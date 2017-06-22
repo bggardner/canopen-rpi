@@ -157,131 +157,338 @@ TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
 class ObjectDictionary(MutableMapping):
     def __init__(self, other=None, **kwargs):
         self._store = { # Defaults
-            ODI_DATA_TYPE_BOOLEAN: Object({
-                ODSI_VALUE: 0x00000001,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER8: Object({
-                ODSI_VALUE: 0x00000008,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER16: Object({
-                ODSI_VALUE: 0x00000010,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER32: Object({
-                ODSI_VALUE: 0x00000020,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED8: Object({
-                ODSI_VALUE: 0x00000008,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED16: Object({
-                ODSI_VALUE: 0x00000010,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED32: Object({
-                ODSI_VALUE: 0x00000020,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_REAL32: Object({
-                ODSI_VALUE: 0x00000020,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_VISIBLE_STRING: Object({
-                ODSI_VALUE: 0x00000000, # Implementation-specific
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_OCTET_STRING: Object({
-                ODSI_VALUE: 0x00000000, # Implementation-specific
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNICODE_STRING: Object({
-                ODSI_VALUE: 0x00000000, # Implementation-specific
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_TIME_OF_DAY: Object({
-                ODSI_VALUE: 0x00000030,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_DOMAIN: Object({
-                ODSI_VALUE: 0x00000000,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER24: Object({
-                ODSI_VALUE: 0x00000018,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_REAL64: Object({
-                ODSI_VALUE: 0x00000040,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER40: Object({
-                ODSI_VALUE: 0x00000028,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER48: Object({
-                ODSI_VALUE: 0x00000030,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER56: Object({
-                ODSI_VALUE: 0x00000038,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_INTEGER64: Object({
-                ODSI_VALUE: 0x00000040,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED24: Object({
-                ODSI_VALUE: 0x00000018,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED40: Object({
-                ODSI_VALUE: 0x00000028,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED48: Object({
-                ODSI_VALUE: 0x00000030,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED56: Object({
-                ODSI_VALUE: 0x00000038,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_UNSIGNED64: Object({
-                ODSI_VALUE: 0x00000040,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED32 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFTYPE << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_PDO_COMMUNICATION_PARAMETER: Object({
-                ODSI_VALUE: 0x06, # Implementation-specific
-                ODSI_DATA_TYPE_PDO_COMM_PARAM_ID: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_PDO_COMM_PARAM_TYPE: ODI_DATA_TYPE_UNSIGNED8,
-                ODSI_DATA_TYPE_PDO_COMM_PARAM_INHIBIT_TIME: ODI_DATA_TYPE_UNSIGNED16,
-                ODSI_DATA_TYPE_PDO_COMM_PARAM_EVENT_TIMER: ODI_DATA_TYPE_UNSIGNED16,
-                ODSI_DATA_TYPE_PDO_COMM_PARAM_SYNC_START: ODI_DATA_TYPE_UNSIGNED8,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED16 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFSTRUCT << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_PDO_MAPPING_PARAMETER: Object({
-                ODSI_VALUE: 0x00, # Implementation-specific
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED16 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFSTRUCT << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_SDO_PARAMETER: Object({
-                ODSI_VALUE: 0x03, # Implementation-specific
-                ODSI_DATA_TYPE_SDO_PARAM_CSID: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_SDO_PARAM_SCID: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_SDO_PARAM_SCID: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_SDO_PARAM_NODE_ID: ODI_DATA_TYPE_UNSIGNED8,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED16 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFSTRUCT << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
-            ODI_DATA_TYPE_IDENTITY: Object({
-                ODSI_VALUE: 0x04, # Implementation-specific
-                ODSI_DATA_TYPE_IDENTITY_VENDOR: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_IDENTITY_PRODUCT: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_IDENTITY_REVISION: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_DATA_TYPE_IDENTITY_SERIAL: ODI_DATA_TYPE_UNSIGNED32,
-                ODSI_STRUCTURE: (ODI_DATA_TYPE_UNSIGNED16 << OD_STRUCTURE_DATA_TYPE_BITNUM) + (OD_OBJECT_TYPE_DEFSTRUCT << OD_STRUCTURE_OBJECT_TYPE_BITNUM)
-            }),
+            ODI_DATA_TYPE_BOOLEAN: Object(
+                parameter_name="BOOLEAN",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000001
+            ),
+            ODI_DATA_TYPE_INTEGER8: Object(
+                parameter_name="INTEGER8",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000008
+            ),
+            ODI_DATA_TYPE_INTEGER16: Object(
+                parameter_name="INTEGER16",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000010
+            ),
+            ODI_DATA_TYPE_INTEGER32: Object(
+                parameter_name="INTEGER32",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000020
+            ),
+            ODI_DATA_TYPE_UNSIGNED8: Object(
+                parameter_name="UNSIGNED8",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000008
+            ),
+            ODI_DATA_TYPE_UNSIGNED16: Object(
+                parameter_name="INTEGER16",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000010
+            ),
+            ODI_DATA_TYPE_UNSIGNED32: Object(
+                parameter_name="INTEGER32",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000020
+            ),
+            ODI_DATA_TYPE_REAL32: Object(
+                parameter_name="REAL32",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000020
+            ),
+            ODI_DATA_TYPE_VISIBLE_STRING: Object(
+                parameter_name="VISIBLE_STRING",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000000 # Implementation-specific
+            ),
+            ODI_DATA_TYPE_OCTET_STRING: Object(
+                parameter_name="OCTET_STRING",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000000 # Implementation-specific
+            ),
+            ODI_DATA_TYPE_UNICODE_STRING: Object(
+                parameter_name="UNICODE_STRING",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000000 # Implementation-specific
+            ),
+            ODI_DATA_TYPE_TIME_OF_DAY: Object(
+                parameter_name="TIME_OF_DAY",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000030
+            ),
+            ODI_DATA_TYPE_DOMAIN: Object(
+                parameter_name="DOMAIN",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000000
+            ),
+            ODI_DATA_TYPE_INTEGER24: Object(
+                parameter_name="INTEGER24",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000018
+            ),
+            ODI_DATA_TYPE_REAL64: Object(
+                parameter_name="REAL64",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000040
+            ),
+            ODI_DATA_TYPE_INTEGER40: Object(
+                parameter_name="INTEGER40",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000028
+            ),
+            ODI_DATA_TYPE_INTEGER48: Object(
+                parameter_name="INTEGER48",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000030
+            ),
+            ODI_DATA_TYPE_INTEGER56: Object(
+                parameter_name="INTEGER56",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000038
+            ),
+            ODI_DATA_TYPE_INTEGER64: Object(
+                parameter_name="INTEGER64",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000040
+            ),
+            ODI_DATA_TYPE_UNSIGNED24: Object(
+                parameter_name="UNSIGNED24",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000018
+            ),
+            ODI_DATA_TYPE_UNSIGNED40: Object(
+                parameter_name="UNSIGNED40",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000028
+            ),
+            ODI_DATA_TYPE_UNSIGNED48: Object(
+                parameter_name="UNSIGNED48",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000030
+            ),
+            ODI_DATA_TYPE_UNSIGNED56: Object(
+                parameter_name="UNSIGNED56",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000038
+            ),
+            ODI_DATA_TYPE_UNSIGNED64: Object(
+                parameter_name="UNSIGNED64",
+                object_type=ObjectType.DEFTYPE,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                default_value=0x00000040
+            ),
+            ODI_DATA_TYPE_PDO_COMMUNICATION_PARAMETER: Object(
+                parameter_name="PDO Communication Parameter Record",
+                object_type=ObjectType.DEFSTRUCT,
+                sub_number=6,
+                subs={
+                    ODSI_VALUE: SubObject(
+                        parameter_name="number of supported entries in the record",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED8,
+                        low_limit=6,
+                        high_limit=6,
+                        default_value=6
+                    ),
+                    ODSI_DATA_TYPE_PDO_COMM_PARAM_ID: SubObject(
+                        parameter_name="COB-ID",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_PDO_COMM_PARAM_TYPE: SubObject(
+                        parameter_name="transmission type",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        default_value=ODI_DATA_TYPE_UNSIGNED8
+                    ),
+                    ODSI_DATA_TYPE_PDO_COMM_PARAM_INHIBIT_TIME: SubObject(
+                        parameter_name="inhibit time",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED16,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED16,
+                        default_value=ODI_DATA_TYPE_UNSIGNED16
+                    ),
+                    ODSI_DATA_TYPE_PDO_COMM_PARAM_EVENT_TIMER: SubObject(
+                        parameter_name="event timer",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED16,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED16,
+                        default_value=ODI_DATA_TYPE_UNSIGNED16
+                    ),
+                    ODSI_DATA_TYPE_PDO_COMM_PARAM_SYNC_START: SubObject(
+                        parameter_name="sync start",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        default_value=ODI_DATA_TYPE_UNSIGNED8
+                    )
+                }
+            ),
+            ODI_DATA_TYPE_PDO_MAPPING_PARAMETER: Object(
+                parameter_name="PDO Mapping Parameter Record",
+                object_type=ObjectType.RECORD,
+                sub_number=0x40,
+                subs=dict(list({
+                    ODSI_VALUE: SubObject(
+                        parameter_name="number of supported entries in the record",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED8,
+                        low_limit=0x40,
+                        high_limit=0x40,
+                        default_value=0x40
+                    )
+                }.items()) + list({index: SubObject(
+                        parameter_name="Object " + str(index) + " to be mapped",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ) for index in range(1, 0x41)}.items())
+                )
+            ),
+            ODI_DATA_TYPE_SDO_PARAMETER: Object(
+                parameter_name="SDO Parameter Record",
+                object_type=ObjectType.RECORD,
+                sub_number=3,
+                subs={
+                    ODSI_VALUE: SubObject(
+                        parameter_name="number of supported entries",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED8,
+                        low_limit=3,
+                        high_limit=3,
+                        default_value=3
+                    ),
+                    ODSI_DATA_TYPE_SDO_PARAM_CSID: SubObject(
+                        parameter_name="COB-ID client -> server",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_SDO_PARAM_SCID: SubObject(
+                        parameter_name="COB-ID server -> client",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_SDO_PARAM_NODE_ID: SubObject(
+                        parameter_name="node ID of SDO's client resp. server",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED8,
+                        default_value=ODI_DATA_TYPE_UNSIGNED8
+                    )
+                }
+            ),
+            ODI_DATA_TYPE_IDENTITY: Object(
+                parameter_name="Identity Record",
+                object_type=ObjectType.RECORD,
+                sub_number=4,
+                subs={
+                    ODSI_VALUE: SubObject(
+                        parameter_name="number of supported entries",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED8,
+                        low_limit=3,
+                        high_limit=3,
+                        default_value=3
+                    ),
+                    ODSI_DATA_TYPE_IDENTITY_VENDOR: SubObject(
+                        parameter_name="Vendor-ID",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_IDENTITY_PRODUCT: SubObject(
+                        parameter_name="Product code",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_IDENTITY_REVISION: SubObject(
+                        parameter_name="Revision number",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    ),
+                    ODSI_DATA_TYPE_IDENTITY_SERIAL: SubObject(
+                        parameter_name="Serial number",
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED32,
+                        low_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        high_limit=ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=ODI_DATA_TYPE_UNSIGNED32
+                    )
+                }
+            ),
             ODI_DEVICE_TYPE: None,
             ODI_ERROR: None,
             ODI_IDENTITY: None,
@@ -303,7 +510,6 @@ class ObjectDictionary(MutableMapping):
         if not isinstance(obj, Object):
             if type(obj) not in [bool, int, float, str]:
                 raise TypeError("CANopen object dictionary can only consist of CANopen objects or one of bool, int, float, or str")
-            obj = Object({ODSI_VALUE: obj})
         # TODO: Prevent writing of read-only indices
         self._store[index] = obj
 
@@ -344,9 +550,12 @@ class AccessType(Enum):
     RWR = "rwr"
     CONST = "const"
 
-class DataType:
-    def __init__(self, *args, **kwargs):
-        pass
+class DataType(int):
+    def __new__(cls, value):
+        instance = int.__new__(cls, value)
+        if not 0x0 <= instance <= 0x9F:
+            raise ValueError
+        return instance
 
 class ObjectStructure:
     def __init__(self, data_type: DataType, object_type: ObjectType):
