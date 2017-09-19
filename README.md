@@ -9,7 +9,7 @@ This repository contains two Python modules used for instantiating CANopen nodes
 Node Applications
 -------------------------
 
-Two example node applications are provided, `canopen-node.py` and `canopen-master.py`.  `canopen-node.py` is the simplest implentation of a node, while `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.  Initilization scripts and instructions for starting the node applications at boot are also provided.
+Example node applications are provided.  `canopen-node-sdo.py` is the simplest implentation of a node that supports SDO communication, `canopen-node-pdo.py` adds synchronous PDO support, while `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.  Initilization scripts and instructions for starting the node applications at boot are also provided.
 
 Protocol Adaptors
 -----------------

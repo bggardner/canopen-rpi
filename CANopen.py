@@ -98,8 +98,8 @@ ODSI_DATA_TYPE_PDO_COMM_PARAM_TYPE = 0x02
 ODSI_DATA_TYPE_PDO_COMM_PARAM_INHIBIT_TIME = 0x03
 ODSI_DATA_TYPE_PDO_COMM_PARAM_EVENT_TIMER = 0x05
 ODSI_DATA_TYPE_PDO_COMM_PARAM_SYNC_START = 0x06
-ODI_DATA_TYPE_PDO_MAPPING_PARAMETER = 0x002100
-ODI_DATA_TYPE_SDO_PARAMETER = 0x002200
+ODI_DATA_TYPE_PDO_MAPPING_PARAMETER = 0x0021
+ODI_DATA_TYPE_SDO_PARAMETER = 0x0022
 ODSI_DATA_TYPE_SDO_PARAM_CSID = 0x01
 ODSI_DATA_TYPE_SDO_PARAM_SCID = 0x02
 ODSI_DATA_TYPE_SDO_PARAM_NODE_ID = 0x03
@@ -146,6 +146,8 @@ SDO_SCS_DOWNLOAD = 3
 SDO_SCS_UPLOAD = 2
 SDO_CS_ABORT = 4
 SDO_ABORT_INVALID_CS = 0x05040001
+SDO_ABORT_WO = 0x06010001
+SDO_ABORT_RO = 0x06010002
 SDO_ABORT_OBJECT_DNE = 0x06020000
 SDO_ABORT_SUBINDEX_DNE = 0x06090011
 SDO_ABORT_GENERAL = 0x08000000
@@ -328,6 +330,7 @@ class ObjectDictionary(MutableMapping):
             ODI_DATA_TYPE_PDO_COMMUNICATION_PARAMETER: Object(
                 parameter_name="PDO Communication Parameter Record",
                 object_type=ObjectType.DEFSTRUCT,
+                data_type=ODI_DATA_TYPE_PDO_COMMUNICATION_PARAMETER,
                 sub_number=6,
                 subs={
                     ODSI_VALUE: SubObject(
@@ -383,6 +386,7 @@ class ObjectDictionary(MutableMapping):
             ODI_DATA_TYPE_PDO_MAPPING_PARAMETER: Object(
                 parameter_name="PDO Mapping Parameter Record",
                 object_type=ObjectType.RECORD,
+                data_type=ODI_DATA_TYPE_PDO_MAPPING_PARAMETER,
                 sub_number=0x40,
                 subs=dict(list({
                     ODSI_VALUE: SubObject(
@@ -406,6 +410,7 @@ class ObjectDictionary(MutableMapping):
             ODI_DATA_TYPE_SDO_PARAMETER: Object(
                 parameter_name="SDO Parameter Record",
                 object_type=ObjectType.RECORD,
+                data_type=ODI_DATA_TYPE_SDO_PARAMETER,
                 sub_number=3,
                 subs={
                     ODSI_VALUE: SubObject(
@@ -445,6 +450,7 @@ class ObjectDictionary(MutableMapping):
             ODI_DATA_TYPE_IDENTITY: Object(
                 parameter_name="Identity Record",
                 object_type=ObjectType.RECORD,
+                data_type=ODI_DATA_TYPE_IDENTITY,
                 sub_number=4,
                 subs={
                     ODSI_VALUE: SubObject(
@@ -548,21 +554,17 @@ class AccessType(Enum):
     WO = "wo"
     RW = "rw"
     RWR = "rwr"
+    RWW = "rww"
     CONST = "const"
 
 class DataType(int):
     def __new__(cls, value):
         instance = int.__new__(cls, value)
         if not 0x0 <= instance <= 0x9F:
-            raise ValueError
+            raise ValueError("Invalid data type: 0x{:X}".format(value))
         return instance
 
-class ObjectStructure:
-    def __init__(self, data_type: DataType, object_type: ObjectType):
-        self.data_type = data_type
-        self.object_type = object_type
-
-class Object(MutableMapping):
+class ProtoObject(MutableMapping):
     def __init__(self, **kwargs):
         # See Table 1 of CiA 306-1
         if kwargs["parameter_name"] is not None:
@@ -572,33 +574,32 @@ class Object(MutableMapping):
                 raise ValueError
         self.parameter_name = kwargs["parameter_name"]
         if "object_type" in kwargs and kwargs["object_type"] is not None:
-            object_type = ObjectType(kwargs["object_type"])
+            self.object_type = ObjectType(kwargs["object_type"])
         else:
-            object_type = ObjectType.VAR
+            self.object_type = ObjectType.VAR
         if "data_type" not in kwargs:
-            if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
-                raise ValueError
-            elif object_type == ObjectType.DOMAIN:
-                data_type = DataType("DOMAIN") # TODO
+            #if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+                #raise ValueError # Removed so RECORD SubObjects don't have to redefine data type
+            if self.object_type == ObjectType.DOMAIN:
+                self.data_type = DataType(ODI_DATA_TYPE_DOMAIN)
             else:
-                data_type = None
+                self.data_type = None
         else:
-            data_type = DataType(kwargs["data_type"])
-        structure = ObjectStructure(data_type, object_type)
+            self.data_type = DataType(kwargs["data_type"])
         if "access_type" not in kwargs:
-            if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+            if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
                 raise ValueError
-            elif object_type == ObjectType.DOMAIN:
-                access_type = AccessType.RW
+            elif self.object_type == ObjectType.DOMAIN:
+                self.access_type = AccessType.RW
             else:
-                access_type = None
+                self.access_type = None
         else:
             self.access_type = AccessType(kwargs["access_type"])
-        if "default_value" in kwargs and object_type in [ObjectType.DEFTYPE, ObjectType.VAR, ObjectType.DOMAIN] and "default_value" not in kwargs:
+        if "default_value" in kwargs and self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR, ObjectType.DOMAIN]:
             self.default_value = kwargs["default_value"]
         else:
             self.default_value = None
-        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
+        if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
             if "pdo_mapping" not in kwargs:
                 self.pdo_mapping = False
             elif kwargs["pdo_mapping"] not in [True, False]:
@@ -607,7 +608,7 @@ class Object(MutableMapping):
                 self.pdo_mapping = bool(kwargs["pdo_mapping"])
         else:
             self.pdo_mapping = None
-        if object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]:
+        if self.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]:
             if "sub_number" not in kwargs:
                 raise ValueError
             if not isinstance(kwargs["sub_number"], int):
@@ -617,35 +618,17 @@ class Object(MutableMapping):
             self.sub_number = kwargs["sub_number"]
         else:
             self.sub_number = None
-        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "low_limit" in kwargs:
+        if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "low_limit" in kwargs:
             self.low_limit = kwargs["low_limit"]
         else:
             self.low_limit = None
-        if object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "high_limit" in kwargs:
+        if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "high_limit" in kwargs:
             self.high_limit = kwargs["high_limit"]
         else:
             self.high_limit = None
-        if "obj_flags" in kwargs:
-            self.obj_flags = kwargs["obj_flags"]
-        else:
-            self.obj_flags = 0
-
-        if self.sub_number is None:
-            self._store = {ODSI_VALUE: self.default_value, ODSI_STRUCTURE: structure}
-        else:
-            self._store = {ODSI_STRUCTURE: structure}
-            if "subs" not in kwargs:
-                raise ValueError
-            if not isinstance(kwargs["subs"], dict):
-                raise TypeError
-            if not all(k in range(0, 0xFF) for k in kwargs["subs"].keys()):
-                raise ValueError
-            if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
-                raise TypeError
-            self._store.update(kwargs["subs"])
 
     def __getitem__(self, subindex):
-        if subindex == 0 and self.sub_number == 0:
+        if subindex == ODSI_VALUE and self.sub_number == 0:
             if self.access_type == AccessType.WO:
                 raise AttributeError
         return self._store[subindex]
@@ -675,19 +658,6 @@ class Object(MutableMapping):
                 return len(self._store) - 2 # Don't count sub-indices 0x00 and 0xFF
         return len(self._store) - 1 # Don't count sub-index 0
 
-    def __getattr__(self, name):
-        if name == "data_type":
-            if ODSI_STRUCTURE in self._store:
-                structure = self._store[ODSI_STRUCTURE]
-                data_type = (structure >> 8) & 0xFF
-                return data_type
-        if name == "object_type":
-            if ODSI_STRUCTURE in self._store:
-                structure = self._store[ODSI_STRUCTURE]
-                object_type = structure & 0xFF
-                return object_type
-        raise AttributeError("CANopen object does not contain attribute [" + name + "]")
-
     def update(self, other=None, **kwargs):
         if other is not None:
             for subindex, value in other.items() if isinstance(other, Mapping) else other:
@@ -695,9 +665,43 @@ class Object(MutableMapping):
             for subindex, value in kwargs.items():
                 self[subindex] = value
 
-class SubObject(Object):
+class Object(ProtoObject):
     def __init__(self, **kwargs):
-        kwargs["object_type"] = ObjectType.VAR
+        super().__init__(**kwargs)
+        if "obj_flags" in kwargs:
+            self.obj_flags = kwargs["obj_flags"]
+        else:
+            self.obj_flags = 0
+
+        self._store = {ODSI_STRUCTURE: SubObject(
+            parameter_name="structure",
+            data_type=ODI_DATA_TYPE_UNSIGNED32,
+            access_type=AccessType.CONST,
+            default_value=(self.data_type << 16) + self.object_type
+        )}
+        if self.sub_number is None:
+            self._store.update({
+                ODSI_VALUE: SubObject(
+                    parameter_name="value",
+                    data_type=self.data_type,
+                    access_type=self.access_type,
+                    default_value=self.default_value
+                )
+            })
+        else:
+            if "subs" not in kwargs:
+                raise ValueError
+            if not isinstance(kwargs["subs"], dict):
+                raise TypeError
+            if not all(k in range(0, 0xFF) for k in kwargs["subs"].keys()):
+                raise ValueError
+            if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
+                raise TypeError
+            self._store.update(kwargs["subs"])
+
+class SubObject(ProtoObject):
+    def __init__(self, **kwargs):
+        #kwargs["object_type"] = ObjectType.VAR
         super().__init__(**kwargs)
         self.value = self.default_value
 
@@ -797,11 +801,11 @@ class Message(CAN.Message):
                 return EmcyMessage()
         if fc == FUNCTION_CODE_TPDO1:
             return PdoMessage(fc, node_id, msg.data)
-        if fc == FUNCTION_CODE_TPDO1:
+        if fc == FUNCTION_CODE_TPDO2:
             return PdoMessage(fc, node_id, msg.data)
-        if fc == FUNCTION_CODE_TPDO1:
+        if fc == FUNCTION_CODE_TPDO3:
             return PdoMessage(fc, node_id, msg.data)
-        if fc == FUNCTION_CODE_TPDO1:
+        if fc == FUNCTION_CODE_TPDO4:
             return PdoMessage(fc, node_id, msg.data)
         if fc == FUNCTION_CODE_SDO_TX:
             return SdoResponse.factory(node_id, msg.data)
@@ -1013,7 +1017,11 @@ class Node:
     def _process_heartbeat_producer(self):
         heartbeat_producer_time_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
         if heartbeat_producer_time_object is not None:
-            heartbeat_producer_time = heartbeat_producer_time_object.get(ODSI_VALUE, 0) / 1000
+            heartbeat_producer_time_value = heartbeat_producer_time_object.get(ODSI_VALUE)
+            if heartbeat_producer_time_value is not None and heartbeat_producer_time_value is not None:
+                heartbeat_producer_time = heartbeat_producer_time_value.value / 1000
+            else:
+                heartbeat_producer_time = 0
         else:
             heartbeat_producer_time = 0
         if self._heartbeat_producer_timer is not None and heartbeat_producer_time != self._heartbeat_producer_timer.interval:
@@ -1025,7 +1033,11 @@ class Node:
     def _process_sync(self):
         sync_object = self.od.get(ODI_SYNC)
         if sync_object is not None:
-            is_sync_producer = (sync_object.get(ODSI_VALUE, 0) & 0x40000000) != 0
+            sync_object_value = sync_object.get(ODSI_VALUE)
+            if sync_object_value is not None and sync_object_value.value is not None:
+                is_sync_producer = (sync_object_value.value & 0x40000000) != 0
+            else:
+                is_sync_producer = False
         else:
             is_sync_producer = False
         sync_time_object = self.od.get(ODI_SYNC_TIME)
@@ -1053,36 +1065,37 @@ class Node:
             self._sync_timer.cancel()
 
     def _send(self, msg: CAN.Message):
-        self.bus.send(msg)
+        return self.bus.send(msg)
 
     def _send_bootup(self):
         msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id)
-        self._send(msg)
+        return self._send(msg)
 
     def _send_heartbeat(self):
-        msg = HeartbeatMessage(self.node_id, self.nmt_state)
-        #msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id, [self.nmt_state])
-        self._send(msg)
+        msg = HeartbeatMessage(self.id, self.nmt_state)
+        return self._send(msg)
 
     def _send_pdo(self, i):
         i = i - 1
         data = bytes()
         tpdo_mp = self.od.get(ODI_TPDO1_MAPPING_PARAMETER + i)
         if tpdo_mp is not None:
-            for j in range(tpdo_mp.get(ODSI_VALUE, 0)):
-                mapping_param = tpdo_mp.get(j + 1)
-                if mapping_param is not None:
-                    mapping_object = self.od.get(mapping_param >> 16)
-                    if mapping_object is not None:
-                        mapping_value = mapping_object.get((mapping_param >> 8) & 0xFF)
+            tpdo_mp_length = tpdo_mp.get(ODSI_VALUE)
+            if tpdo_mp_length is not None and tpdo_mp_length.value is not None:
+                for j in range(tpdo_mp_length.value):
+                    mapping_param = tpdo_mp.get(j + 1)
+                    if mapping_param is not None and mapping_param.value is not None:
+                        mapped_object = self.od.get(mapping_param.value >> 16)
+                        if mapped_object is not None:
+                             mapped_value = mapped_object.get((mapping_param.value >> 8) & 0xFF)
+                        else:
+                            raise ValueError("Mapped PDO object does not exist")
+                        if mapped_value is not None and mapped_value.value is not None:
+                            data = data + mapped_value.value.to_bytes((mapping_param.value & 0xFF) // 8, byteorder='little')
                     else:
-                        mapping_value = 0 # This should really raise an exception, invalid PDO mapping ODSI
-                    if mapping_value is not None:
-                        data = data + mapping_value.to_bytes((mapping_param & 0xFF) // 8, byteorder='little')
-                else:
-                    pass # This should really raise an exception, invalid PDO mapping ODI
-            msg = CAN.Message(((FUNCTION_CODE_TPDO1 + (2 * i)) << FUNCTION_CODE_BITNUM) + self.id, data)
-            self._send(msg)
+                        raise ValueError("Mapped PDO object does not exist")
+                msg = PdoMessage(FUNCTION_CODE_TPDO1 + (2 * i), self.id, data)
+                return self._send(msg)
 
     def _send_sync(self):
         sync_object = self.od.get(ODI_SYNC)
@@ -1172,22 +1185,23 @@ class Node:
                         self.reset_communication()
         elif fc == FUNCTION_CODE_SYNC and self.nmt_state == NMT_STATE_OPERATIONAL:
             sync_obj = self.od.get(ODI_SYNC)
-            if sync_obj is not None and (sync_obj.get(ODSI_VALUE) & 0x3FF) == id:
-                self._sync_counter = (self._sync_counter + 1) % 241
-                for i in range(4):
-                    tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
-                    if tpdo_cp is not None:
-                        tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                        if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                            tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                            if tpdo_cp_type is not None and (((tpdo_cp_type == 0 or tpdo_cp_type == 0xFC) and self._tpdo_triggers[i]) or tpdo_cp_type == self._sync_counter):
-                                self._send_pdo(i + 1)
-                                self._tpdo_triggers[i] = False
+            if sync_obj is not None:
+                sync_obj_value = sync_obj.get(ODSI_VALUE)
+                if sync_obj_value is not None and (sync_obj_value.value & 0x3FF) == id:
+                    self._sync_counter = (self._sync_counter + 1) % 241
+                    for i in range(4):
+                        tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
+                        if tpdo_cp is not None:
+                            tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                            if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
+                                tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                                if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
+                                    self._tpdo_triggers[i] = False
         elif fc == FUNCTION_CODE_SDO_RX and self.nmt_state != NMT_STATE_STOPPED:
             sdo_server_object = self.od.get(ODI_SDO_SERVER)
             if sdo_server_object is not None:
-                sdo_server_id = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_CSID)
-                if sdo_server_id is not None and id == sdo_server_id:
+                sdo_server_csid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_CSID)
+                if sdo_server_csid is not None and id == sdo_server_csid.value:
                     if len(data) == 8:
                         try:
                             ccs = (data[0] >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
@@ -1197,6 +1211,9 @@ class Node:
                                 obj = self.od.get(odi)
                                 if odsi in obj:
                                     if ccs == SDO_CCS_UPLOAD:
+                                        subobj = obj.get(odsi)
+                                        if subobj.access_type == AccessType.WO:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_WO)
                                         scs = SDO_SCS_UPLOAD
                                         n = None # n = len(self.od.get(odi).get(odsi)) # TODO: Lookup length
                                         if n is None:
@@ -1209,8 +1226,10 @@ class Node:
                                         else:
                                             s = 1
                                             e = 1
-                                        sdo_data = obj.get(odsi)
+                                        sdo_data = subobj.value
                                     elif ccs == SDO_CCS_DOWNLOAD:
+                                        if obj.access_type in [AccessType.RO, AccessType.CONST]:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_RO)
                                         scs = SDO_SCS_DOWNLOAD
                                         s = (data[0] >> SDO_S_BITNUM) & 1
                                         e = (data[0] >> SDO_E_BITNUM) & 1
@@ -1228,7 +1247,7 @@ class Node:
                                                         obj.update({odsi: int.from_bytes(data[4:8-n], byteorder='little')})
                                                         self.od.update({odi: obj})
                                         elif e == 0 and s == 1:
-                                            self._sdo_buffer = data[4:8]
+                                            raise NotImplementedError # TODO: Stadard SDO
                                         else:
                                             raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL) # e == 0, s == 0 is reserved
                                         sdo_data = 0
@@ -1246,7 +1265,10 @@ class Node:
                             sdo_data = a.code
                         sdo_data = sdo_data.to_bytes(4, byteorder='little')
                         data = [(scs << SDO_CS_BITNUM) + (n << SDO_N_BITNUM) + (e << SDO_E_BITNUM), (odi & 0xFF), (odi >> 8), (odsi)] + list(sdo_data)
-                        msg = CAN.Message(sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID), data)
+                        sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
+                        if sdo_server_scid is None:
+                            raise ValueError("SDO Server SCID not specified")
+                        msg = CAN.Message(sdo_server_scid.value, data)
                         self._send(msg)
                         self._process_timers()
                 elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
