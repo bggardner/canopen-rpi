@@ -1,0 +1,85 @@
+[FileInfo]
+FileName=node.eds
+FileVersion=1
+FileRevision=1
+EDSVersion=4.0
+Description=Example EDS for canopen-rpi
+
+[DeviceInfo]
+VendorName=N/A
+VendorNumber=0
+ProductName=Example
+ProductNumber=0
+RevisionNumber=0
+LSS_Supported=0
+BaudRate_50=0
+BaudRate_250=0
+BaudRate_500=0
+BaudRate_1000=1
+SimpleBootUpSlave=0
+SimpleBootUpMaster=0
+NrOfRxPdo=0
+NrOfTxPdo=0
+
+[MandatoryObjects]
+SupportedObjects=3
+1=0x1000
+2=0x1001
+3=0x1017
+4=0x1018
+
+[OptionalObjects]
+SupportedObjects=0
+
+[ManufacturerObjects]
+SupportedObjects=0
+
+[1000]
+SubNumber=0
+ParameterName=Device type
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+[1001]
+SubNumber=0
+ParameterName=Error register
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=0
+
+[1017]
+SubNumber=0
+ParameterName=Producer heartbeat time
+ObjectType=0x7
+DataType=0x0006
+AccessType=const
+DefaultValue=1000
+
+[1018]
+SubNumber=2
+ParameterName=Identity object
+ObjectType=0x9
+DataType=0x0023
+
+[1018sub0]
+ParameterName=Number of entries
+AccessType=ro
+DefaultValue=0x02
+PDOMapping=0
+
+[1018sub1]
+ParameterName=Vendor ID
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+[1018sub2]
+ParameterName=Product ID
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0

@@ -4,6 +4,7 @@
 
 import CAN
 from collections import Mapping, MutableMapping
+import configparser
 from enum import Enum, IntEnum, unique
 from select import select
 import struct
@@ -535,8 +536,29 @@ class ObjectDictionary(MutableMapping):
             for index, obj in kwargs.items():
                 self[index] = obj
 
-    def fromEds(filename):
-        raise NotImplementedError #TODO
+    def from_eds(filename):
+        eds = configparser.ConfigParser()
+        eds.read(filename)
+        od = ObjectDictionary()
+        indices = []
+        for section in ['MandatoryObjects', 'OptionalObjects', 'ManufacturerObjects']:
+            if section not in eds:
+                continue
+            n = int(eds[section]['SupportedObjects'])
+            for i in range(1, n + 1):
+                indices.append(int(eds['MandatoryObjects'][str(i)], 0))
+        od = {}
+        for i in indices:
+            oc = eds["{:4X}".format(i)]
+            sub_number = int(oc['SubNumber'], 0)
+            subs = {}
+            if sub_number > 0:
+                for si in range(sub_number + 1):
+                    sub = SubObject.from_config(eds["{:4X}sub{:d}".format(i, si)])
+                    subs.update({si: sub})
+            o = Object.from_config(oc, subs)
+            od.update({i: o})
+        return ObjectDictionary(od)
 
 @unique
 class ObjectType(IntEnum):
@@ -584,6 +606,8 @@ class ProtoObject(MutableMapping):
                 self.data_type = DataType(ODI_DATA_TYPE_DOMAIN)
             else:
                 self.data_type = None
+        elif kwargs["data_type"] is None:
+                self.data_type = None
         else:
             self.data_type = DataType(kwargs["data_type"])
         if "access_type" not in kwargs:
@@ -592,6 +616,8 @@ class ProtoObject(MutableMapping):
             elif self.object_type == ObjectType.DOMAIN:
                 self.access_type = AccessType.RW
             else:
+                self.access_type = None
+        elif kwargs["access_type"] is None:
                 self.access_type = None
         else:
             self.access_type = AccessType(kwargs["access_type"])
@@ -602,22 +628,14 @@ class ProtoObject(MutableMapping):
         if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
             if "pdo_mapping" not in kwargs:
                 self.pdo_mapping = False
+            elif kwargs["pdo_mapping"] is None:
+                self.pdo_mapping = False
             elif kwargs["pdo_mapping"] not in [True, False]:
                 raise ValueError
             else:
                 self.pdo_mapping = bool(kwargs["pdo_mapping"])
         else:
             self.pdo_mapping = None
-        if self.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]:
-            if "sub_number" not in kwargs:
-                raise ValueError
-            if not isinstance(kwargs["sub_number"], int):
-                raise TypeError
-            if kwargs["sub_number"] not in range(0xFF):
-                raise ValueError
-            self.sub_number = kwargs["sub_number"]
-        else:
-            self.sub_number = None
         if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR] and "low_limit" in kwargs:
             self.low_limit = kwargs["low_limit"]
         else:
@@ -665,9 +683,52 @@ class ProtoObject(MutableMapping):
             for subindex, value in kwargs.items():
                 self[subindex] = value
 
+    @classmethod
+    def from_config(cls, cfg):
+        parameter_name = cfg['ParameterName']
+        if 'ObjectType' in cfg:
+            object_type = ObjectType(int(cfg['ObjectType'], 0))
+        else:
+            object_type = None
+        if 'DataType' in cfg:
+            data_type = int(cfg['DataType'], 0)
+        else:
+            data_type = None
+        if 'AccessType' in cfg:
+            access_type = AccessType(cfg['AccessType'])
+        else:
+            access_type = None
+        if 'DefaultValue' in cfg:
+            default_value = int(cfg['DefaultValue'], 0) # TODO for non-integer values
+        else:
+            default_value = None
+        if 'PDOMapping' in cfg:
+            pdo_mapping = bool(cfg['PDOMapping'])
+        else:
+            pdo_mapping = None
+        return ProtoObject(
+            parameter_name=parameter_name,
+            object_type=object_type,
+            data_type=data_type,
+            access_type=access_type,
+            default_value=default_value,
+            pdo_mapping=pdo_mapping
+        )
+
+
 class Object(ProtoObject):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        if self.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]:
+            if "sub_number" not in kwargs:
+                raise ValueError
+            if not isinstance(kwargs["sub_number"], int):
+                raise TypeError
+            if kwargs["sub_number"] not in range(0xFF):
+                raise ValueError
+            self.sub_number = kwargs["sub_number"]
+        else:
+            self.sub_number = None
         if "obj_flags" in kwargs:
             self.obj_flags = kwargs["obj_flags"]
         else:
@@ -699,11 +760,37 @@ class Object(ProtoObject):
                 raise TypeError
             self._store.update(kwargs["subs"])
 
+    @classmethod
+    def from_config(cls, cfg, subs):
+        po = ProtoObject.from_config(cfg)
+        return cls(
+            parameter_name=po.parameter_name,
+            object_type=po.object_type,
+            data_type=po.data_type,
+            access_type=po.access_type,
+            default_value=po.default_value,
+            pdo_mapping=po.pdo_mapping,
+            sub_number=int(cfg['SubNumber'], 0),
+            subs=subs
+        )
+
 class SubObject(ProtoObject):
     def __init__(self, **kwargs):
         #kwargs["object_type"] = ObjectType.VAR
         super().__init__(**kwargs)
         self.value = self.default_value
+
+    @classmethod
+    def from_config(cls, cfg):
+        po = ProtoObject.from_config(cfg)
+        return cls(
+            parameter_name=po.parameter_name,
+            object_type=po.object_type,
+            data_type=po.data_type,
+            access_type=po.access_type,
+            default_value=po.default_value,
+            pdo_mapping=po.pdo_mapping
+        )
 
 class IntervalTimer(Thread):
     def __init__(self, interval, function, args=None, kwargs=None):
