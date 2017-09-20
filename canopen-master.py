@@ -132,7 +132,7 @@ while True:
                                 data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
                                 low_limit=0x00000000,
                                 high_limit=0xFFFFFFFF,
-                                default_value=2000 # all nodes, 16-bit, in ms
+                                default_value=(1 << 16) + 2000 # Node-ID 1, 16-bit, in ms
                             ),
                         }
                     ),

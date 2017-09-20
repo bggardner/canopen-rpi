@@ -846,8 +846,9 @@ class SyncMessage(Message):
         super().__init__(FUNCTION_CODE_SYNC, 0x00)
 
 class EmcyMessage(Message):
-    def __init__(self, node_id, data):
-        super().__init__(FUNCTION_CODE_EMCY, node_id, data)
+    def __init__(self, emcy_id, eec, er, msef=0):
+        data = struct.pack("<HBBI", eec, er, msef & 0xFF, msef >> 8)
+        super().__init__(emcy_id >> FUNCTION_CODE_BITNUM, emcy_id & 0x7F, data)
 
 class PdoMessage(Message):
     def __init__(self, fc, node_id, data):
@@ -1005,10 +1006,7 @@ class Node:
 
     def _heartbeat_consumer_timeout(self, id):
         if self.nmt_state != NMT_STATE_STOPPED:
-            emcy_id = self.od.get(ODI_EMCY_ID)
-            if emcy_id is not None:
-                msg = CAN.Message(emcy_id, (EMCY_HEARTBEAT_BY_NODE + id).to_bytes(2, byteorder='little') + self.od.get(ODI_ERROR).get(ODSI_VALUE).to_bytes(1, byteorder='little') + b'\x00\x00\x00\x00\x00')
-                self._send(msg)
+            self._send_emcy(EMCY_HEARTBEAT_BY_NODE + id)
 
     def _process_err_indicator(self):
         err_state = self.bus.get_state()
@@ -1072,6 +1070,26 @@ class Node:
     def _send_bootup(self):
         msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id)
         return self._send(msg)
+
+    def _send_emcy(self, eec, msef=0):
+        emcy_id_obj = self.od.get(ODI_EMCY_ID)
+        if emcy_id_obj is None:
+            return
+        emcy_id_value = emcy_id_obj.get(ODSI_VALUE)
+        if emcy_id_value is None:
+            return
+        if emcy_id_value.value is None:
+            return
+        er_obj = self.od.get(ODI_ERROR)
+        if er_obj is None:
+            return
+        er_value = er_obj.get(ODSI_VALUE)
+        if er_value is None:
+            return
+        if er_value.value is None:
+            return
+        msg = EmcyMessage(emcy_id_value.value, eec, er_value.value, msef)
+        self._send(msg)
 
     def _send_heartbeat(self):
         msg = HeartbeatMessage(self.id, self.nmt_state)
@@ -1274,19 +1292,24 @@ class Node:
                         msg = CAN.Message(sdo_server_scid.value, data)
                         self._send(msg)
                         self._process_timers()
-                elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
-                    producer_id = id & 0x7F
-                    if producer_id in self._heartbeat_consumer_timers:
-                        self._heartbeat_consumer_timers.get(producer_id).cancel()
-                    heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
-                    if heartbeat_consumer_time_object is not None:
-                        heartbeat_consumer_time = heartbeat_consumer_time_object.get(ODSI_HEARTBEAT_CONSUMER_TIME, 0) / 1000
-                    else:
-                        heartbeat_consumer_time = 0
-                    if heartbeat_consumer_time != 0:
-                        heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
-                        heartbeat_consumer_timer.start()
-                        self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
+        elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
+            producer_id = id & 0x7F
+            if producer_id in self._heartbeat_consumer_timers:
+                self._heartbeat_consumer_timers.get(producer_id).cancel()
+            heartbeat_cosumer_time = 0
+            heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
+            if heartbeat_consumer_time_object is not None:
+                heartbeat_consumer_time_length = heartbeat_consumer_time_object.get(ODSI_VALUE)
+                if heartbeat_consumer_time_length is not None and heartbeat_consumer_time_length is not None:
+                    for i in range(1, heartbeat_consumer_time_length.value + 1):
+                        heartbeat_consumer_time_value = heartbeat_consumer_time_object.get(i)
+                        if heartbeat_consumer_time_value is not None and heartbeat_consumer_time_value.value is not None and ((heartbeat_consumer_time_value.value >> 16) & 0x7F) == producer_id:
+                            heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
+                            break;
+            if heartbeat_consumer_time != 0:
+                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
+                heartbeat_consumer_timer.start()
+                self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
 
     def reset(self):
         self.od = self._default_od
