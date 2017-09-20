@@ -8,8 +8,8 @@ import signal
 from time import sleep
 from sys import exit
 
-DEFAULT_CAN_INTERFACE = "can0"
-REDUNDANT_CAN_INTERFACE = "can1"
+DEFAULT_CAN_INTERFACE = "vcan0"
+REDUNDANT_CAN_INTERFACE = "vcan1"
 
 PIN_ENABLE_N = 42
 PIN_ADDRESS_N = list(range(34, 41))
@@ -71,15 +71,51 @@ while True:
                 for bit in address_n:
                     node_id = (node_id << 1) | (not bit)
 
-                canopen_od = CANopen.ObjectDictionary({ # TODO: Include data types so there is a way to determine the length of values for SDO responses (currently always 4 bytes)
-                    CANopen.ODI_DEVICE_TYPE: 0x00000000,
-                    CANopen.ODI_ERROR: 0x00,
-                    CANopen.ODI_SYNC: 0x40000000 + (CANopen.FUNCTION_CODE_SYNC << CANopen.FUNCTION_CODE_BITNUM),
-                    CANopen.ODI_SYNC_TIME: 0, # 32-bit, in us
-                    CANopen.ODI_EMCY_ID: (CANopen.FUNCTION_CODE_EMCY << CANopen.FUNCTION_CODE_BITNUM) + node_id,
+                if node_id == CANopen.BROADCAST_NODE_ID:
+                    print("Invalid Node ID")
+                    sleep(1)
+                    raise ResetCommunication
+
+                canopen_od = CANopen.ObjectDictionary({
+                    CANopen.ODI_DEVICE_TYPE: CANopen.Object(
+                        parameter_name="Device type",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.RO,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=0x00000000
+                    ),
+                    CANopen.ODI_ERROR: CANopen.Object(
+                        parameter_name="Error register",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.RO,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                        default_value=0x00
+                    ),
+                    CANopen.ODI_SYNC: CANopen.Object(
+                        parameter_name="COB-ID SYNC",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.CONST,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=0x40000000 + (CANopen.FUNCTION_CODE_SYNC << CANopen.FUNCTION_CODE_BITNUM), # SYNC producer
+                    ),
+                    CANopen.ODI_SYNC_TIME: CANopen.Object(
+                        parameter_name="Communication cycle period",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.RW,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=1000000 # 1 second, 32-bit, in us
+                    ),
+                    CANopen.ODI_EMCY_ID: CANopen.Object(
+                        parameter_name="COB-ID emergency message",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.CONST,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=(CANopen.FUNCTION_CODE_EMCY << CANopen.FUNCTION_CODE_BITNUM) + node_id
+                    ),
                     CANopen.ODI_HEARTBEAT_CONSUMER_TIME: CANopen.Object(
                         parameter_name="Consumer Heartbeat Time",
                         object_type=CANopen.ObjectType.ARRAY,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
                         sub_number=1,
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
@@ -100,10 +136,17 @@ while True:
                             ),
                         }
                     ),
-                    CANopen.ODI_HEARTBEAT_PRODUCER_TIME: 1000, # 16-bit, in ms
+                    CANopen.ODI_HEARTBEAT_PRODUCER_TIME: CANopen.Object(
+                        parameter_name="Producer heartbeat time",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.RW,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                        default_value=1000 # 16-bit, in ms
+                    ),
                     CANopen.ODI_IDENTITY: CANopen.Object(
                         parameter_name="Identity Object",
-                        object_type=CANopen.ObjectType.ARRAY,
+                        object_type=CANopen.ObjectType.RECORD,
+                        data_type=CANopen.ODI_DATA_TYPE_IDENTITY,
                         sub_number=4,
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
@@ -151,6 +194,7 @@ while True:
                     CANopen.ODI_SDO_SERVER: CANopen.Object(
                         parameter_name="Server SDO parameter",
                         object_type=CANopen.ObjectType.RECORD,
+                        data_type=CANopen.ODI_DATA_TYPE_SDO_PARAMETER,
                         sub_number=2,
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
@@ -182,6 +226,7 @@ while True:
                     CANopen.ODI_TPDO1_COMMUNICATION_PARAMETER: CANopen.Object(
                         parameter_name="transmit PDO parameter",
                         object_type=CANopen.ObjectType.RECORD,
+                        data_type=CANopen.ODI_DATA_TYPE_PDO_COMMUNICATION_PARAMETER,
                         sub_number=2,
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
@@ -189,7 +234,7 @@ while True:
                                 access_type=CANopen.AccessType.RO,
                                 data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
                                 low_limt=2,
-                                high_limit=5,
+                                high_limit=6,
                                 default_value=2
                             ),
                             CANopen.ODSI_TPDO_COMM_PARAM_ID: CANopen.SubObject(
@@ -213,6 +258,7 @@ while True:
                     CANopen.ODI_TPDO1_MAPPING_PARAMETER: CANopen.Object(
                         parameter_name="transmit PDO mapping",
                         object_type=CANopen.ObjectType.RECORD,
+                        data_type=CANopen.ODI_DATA_TYPE_PDO_MAPPING_PARAMETER,
                         sub_number=2,
                         subs={
                             CANopen.ODSI_VALUE: CANopen.SubObject(
@@ -245,17 +291,14 @@ while True:
 
                 try:
                     node.boot()
+                    print("Rebooted")
                 except NameError:
                     node = CANopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0)
+                    print("First boot")
                     node.boot()
 
                 try:
-                    node.listen()
-                    while True:
-                        sync_time_object = node.od.get(CANopen.ODI_SYNC_TIME);
-                        sync_time_object.update({CANopen.ODSI_VALUE: sync_time_object.get(CANopen.ODSI_VALUE) + 1})
-                        node.od.update({CANopen.ODI_SYNC_TIME: sync_time_object})
-                        sleep(1)
+                    node.listen(True)
                 except CAN.BusDown:
                     sleep(1)
                     continue

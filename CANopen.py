@@ -973,8 +973,8 @@ class SdoTimeout(Exception):
 class Node:
     def __init__(self, bus: CAN.Bus, id, od: ObjectDictionary, *args, **kwargs):
         self.bus = bus
-        if id > 0x7F or id < 0:
-            raise ValueError
+        if id > 0x7F or id <= 0:
+            raise ValueError("Invalid Node ID")
         self.id = id
         self._default_od = od
 
@@ -1042,7 +1042,9 @@ class Node:
             is_sync_producer = False
         sync_time_object = self.od.get(ODI_SYNC_TIME)
         if sync_time_object is not None:
-            sync_time = sync_time_object.get(ODSI_VALUE, 0) / 1000000
+            sync_time_value = sync_time_object.get(ODSI_VALUE)
+            if sync_time_value is not None and sync_time_value.value is not None:
+                sync_time = sync_time_value.value / 1000000
         else:
             sync_time = 0
         if self._sync_timer is not None and (sync_time != self._sync_timer.interval or self.nmt_state == NMT_STATE_STOPPED):
@@ -1095,14 +1097,15 @@ class Node:
                     else:
                         raise ValueError("Mapped PDO object does not exist")
                 msg = PdoMessage(FUNCTION_CODE_TPDO1 + (2 * i), self.id, data)
-                return self._send(msg)
+                self._send(msg)
+                self._tpdo_triggers[i] = False
 
     def _send_sync(self):
         sync_object = self.od.get(ODI_SYNC)
         if sync_object is not None:
             sync_value = sync_object.get(ODSI_VALUE)
-            if sync_value is not None:
-                sync_id = sync_value & 0x3FF
+            if sync_value is not None and sync_value.value is not None:
+                sync_id = sync_value.value & 0x3FF
                 msg = CAN.Message(sync_id)
                 self._send(msg)
 
@@ -1196,7 +1199,7 @@ class Node:
                             if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
                                 tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
                                 if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
-                                    self._tpdo_triggers[i] = False
+                                    self._send_pdo(i + 1)
         elif fc == FUNCTION_CODE_SDO_RX and self.nmt_state != NMT_STATE_STOPPED:
             sdo_server_object = self.od.get(ODI_SDO_SERVER)
             if sdo_server_object is not None:
