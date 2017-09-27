@@ -651,16 +651,6 @@ class ProtoObject(MutableMapping):
                 raise AttributeError
         return self._store[subindex]
 
-    def __setitem__(self, subindex, value):
-        if type(subindex) is not int:
-            raise TypeError("CANopen object sub-index must be an integer")
-        if subindex < 0 or subindex >= 2 ** 8:
-            raise IndexError("CANopen object sub-index must be a positive 8-bit integer")
-        if type(value) not in [bool, int, float, str]:
-            raise TypeError("CANopen objects can only be set to one of bool, int, float, or str")
-        # TODO: Prevent writing of read-only indices
-        self._store[subindex] = value
-
     def __delitem__(self, subindex):
         del self._store[subindex]
 
@@ -675,6 +665,10 @@ class ProtoObject(MutableMapping):
             if object_type in [OD_OBJECT_TYPE_ARRAY, OD_OBJECT_TYPE_RECORD]:
                 return len(self._store) - 2 # Don't count sub-indices 0x00 and 0xFF
         return len(self._store) - 1 # Don't count sub-index 0
+
+    def __setattr__(self, name, value):
+        # TODO: Prevent writing of read-only indices
+        super().__setattr__(name, value)
 
     def update(self, other=None, **kwargs):
         if other is not None:
@@ -715,6 +709,29 @@ class ProtoObject(MutableMapping):
             pdo_mapping=pdo_mapping
         )
 
+
+class SubObject(ProtoObject):
+    def __init__(self, **kwargs):
+        #kwargs["object_type"] = ObjectType.VAR
+        super().__init__(**kwargs)
+        self.value = self.default_value
+
+    def __setitem__(self, name, value):
+        if name == "value" and type(value) not in [bool, int, float, str]:
+            raise TypeError("CANopen objects can only be set to one of bool, int, float, or str")
+        super().__setattr__(name,  value)
+
+    @classmethod
+    def from_config(cls, cfg):
+        po = ProtoObject.from_config(cfg)
+        return cls(
+            parameter_name=po.parameter_name,
+            object_type=po.object_type,
+            data_type=po.data_type,
+            access_type=po.access_type,
+            default_value=po.default_value,
+            pdo_mapping=po.pdo_mapping
+        )
 
 class Object(ProtoObject):
     def __init__(self, **kwargs):
@@ -760,6 +777,16 @@ class Object(ProtoObject):
                 raise TypeError
             self._store.update(kwargs["subs"])
 
+    def __setitem__(self, subindex, sub_object: SubObject):
+        if type(subindex) is not int:
+            raise TypeError("CANopen object sub-index must be an integer")
+        if subindex < 0 or subindex >= 2 ** 8:
+            raise IndexError("CANopen object sub-index must be a positive 8-bit integer")
+        if type(sub_object) is not SubObject:
+            raise TypeError("Must be a SubObject")
+        # TODO: Prevent writing of read-only indices
+        self._store[subindex] = sub_object
+
     @classmethod
     def from_config(cls, cfg, subs):
         po = ProtoObject.from_config(cfg)
@@ -772,24 +799,6 @@ class Object(ProtoObject):
             pdo_mapping=po.pdo_mapping,
             sub_number=int(cfg['SubNumber'], 0),
             subs=subs
-        )
-
-class SubObject(ProtoObject):
-    def __init__(self, **kwargs):
-        #kwargs["object_type"] = ObjectType.VAR
-        super().__init__(**kwargs)
-        self.value = self.default_value
-
-    @classmethod
-    def from_config(cls, cfg):
-        po = ProtoObject.from_config(cfg)
-        return cls(
-            parameter_name=po.parameter_name,
-            object_type=po.object_type,
-            data_type=po.data_type,
-            access_type=po.access_type,
-            default_value=po.default_value,
-            pdo_mapping=po.pdo_mapping
         )
 
 class IntervalTimer(Thread):
@@ -1103,7 +1112,7 @@ class Node:
         heartbeat_producer_time_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
         if heartbeat_producer_time_object is not None:
             heartbeat_producer_time_value = heartbeat_producer_time_object.get(ODSI_VALUE)
-            if heartbeat_producer_time_value is not None and heartbeat_producer_time_value is not None:
+            if heartbeat_producer_time_value is not None and heartbeat_producer_time_value.value is not None:
                 heartbeat_producer_time = heartbeat_producer_time_value.value / 1000
             else:
                 heartbeat_producer_time = 0
@@ -1235,17 +1244,15 @@ class Node:
 
     def _listen(self):
         while True:
-            rlist, _, _, = select([self.bus], [], [])
-            for bus in rlist:
-                msg = bus.recv()
-                self.recv(msg)
+            msg = self.recv()
+            self.process(msg)
 
     def boot(self):
         self._send_bootup()
         self.nmt_state = NMT_STATE_PREOPERATIONAL
         self._process_timers()
 
-    def recv(self, msg: CAN.Message):
+    def process(self, msg: Message):
         id = msg.arbitration_id
         data = msg.data
         rtr = msg.is_remote_frame
@@ -1318,8 +1325,8 @@ class Node:
                             if odi in self.od:
                                 obj = self.od.get(odi)
                                 if odsi in obj:
+                                    subobj = obj.get(odsi)
                                     if ccs == SDO_CCS_UPLOAD:
-                                        subobj = obj.get(odsi)
                                         if subobj.access_type == AccessType.WO:
                                             raise SdoAbort(odi, odsi, SDO_ABORT_WO)
                                         scs = SDO_SCS_UPLOAD
@@ -1336,14 +1343,15 @@ class Node:
                                             e = 1
                                         sdo_data = subobj.value
                                     elif ccs == SDO_CCS_DOWNLOAD:
-                                        if obj.access_type in [AccessType.RO, AccessType.CONST]:
+                                        if subobj.access_type in [AccessType.RO, AccessType.CONST]:
                                             raise SdoAbort(odi, odsi, SDO_ABORT_RO)
                                         scs = SDO_SCS_DOWNLOAD
                                         s = (data[0] >> SDO_S_BITNUM) & 1
                                         e = (data[0] >> SDO_E_BITNUM) & 1
                                         if e == 1 and s == 1:
                                             n = (data[0] >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
-                                            obj.update({odsi: int.from_bytes(data[4:8-n], byteorder='little')})
+                                            subobj.value = int.from_bytes(data[4:8-n], byteorder='little')
+                                            obj.update({odsi: subobj})
                                             self.od.update({odi: obj})
                                         elif e == 1 and s == 0:
                                             if ODSI_STRUCTURE in obj:
@@ -1383,7 +1391,7 @@ class Node:
             producer_id = id & 0x7F
             if producer_id in self._heartbeat_consumer_timers:
                 self._heartbeat_consumer_timers.get(producer_id).cancel()
-            heartbeat_cosumer_time = 0
+            heartbeat_consumer_time = 0
             heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
             if heartbeat_consumer_time_object is not None:
                 heartbeat_consumer_time_length = heartbeat_consumer_time_object.get(ODSI_VALUE)
@@ -1397,6 +1405,11 @@ class Node:
                 heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
+
+    def recv(self):
+        rlist, _, _, = select([self.bus], [], [])
+        return Message.factory(self.bus.recv())
+
 
     def reset(self):
         self.od = self._default_od
