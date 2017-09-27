@@ -1383,7 +1383,7 @@ class Node:
             producer_id = id & 0x7F
             if producer_id in self._heartbeat_consumer_timers:
                 self._heartbeat_consumer_timers.get(producer_id).cancel()
-            heartbeat_cosumer_time = 0
+            heartbeat_consumer_time = 0
             heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
             if heartbeat_consumer_time_object is not None:
                 heartbeat_consumer_time_length = heartbeat_consumer_time_object.get(ODSI_VALUE)
