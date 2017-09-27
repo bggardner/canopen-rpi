@@ -11,7 +11,7 @@ Node Applications
 
 Example node applications are provided:
 * `canopen-node-sdo.py` is the simplest implentation of a node that supports SDO communication.
-* `canopen-node-eds.py` imports the CANopen object dictionary from an EDS file.
+* `canopen-node-eds.py` imports the CANopen object dictionary from an EDS file (`node.eds`).
 * `canopen-node-pdo.py` adds synchronous PDO support.
 * `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.
 
