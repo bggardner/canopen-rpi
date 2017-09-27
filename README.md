@@ -15,7 +15,7 @@ Example node applications are provided:
 * `canopen-node-pdo.py` adds synchronous PDO support.
 * `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.
 
-Initilization scripts and instructions for starting the node applications at boot are also provided.
+`systemd` `.service` files and instructions for starting the node applications at boot are also provided.
 
 Protocol Adaptors
 -----------------
@@ -87,10 +87,12 @@ Add CAN Support
     sudo ip link set can1 up type can bitrate 1000000
     ```
     * Automatic (start at boot-up)
-        * Copy [can_if](https://github.com/linux-can/can-misc/blob/master/etc/can_if) to `/etc/init.d/`
-        * Modify `can_if` line `CAN_IF=""` to `CAN_IF="can0@1000000,500 can1@1000000,500"` *(may vary per application)*
-        * `sudo update-rc.d can_if defaults`
-        * `sudo reboot` or `sudo /etc/init.d/can_if start`
+        # Copy [can_if](https://github.com/linux-can/can-misc/blob/master/etc/can_if) to `/home/pi/` (or change location in `can_if.service`
+        # Modify `can_if` line `CAN_IF=""` to `CAN_IF="can0@1000000,2000 can1@1000000,2000"` *(may vary per application)*
+        # Copy `can_if.service` to `/etc/systemd/system/`
+        # `sudo systemctl daemon-reload`
+        # `sudo systemctl enable can_if.service`
+        # `sudo reboot` or `sudo systemctl start can_if.service`
 
 4. (Optional) Install `can-utils` for debugging
 
@@ -101,49 +103,21 @@ Add CAN Support
 Library Usage
 -------------
 
-The simplest node can be run from the following code:
+The simplest node is presented in the [canopen-node-sdo.py](/canopen-node-sdo.py) file.
 
-```
-#!/usr/bin/python3
-import CAN
-import CANopen
-
-NODE_ID = 1
-
-object_dictionary = CANopen.ObjectDictionary({ // Mandatory entries (with heartbeat protocol)
-    CANopen.ODI_DEVICE_TYPE: 0x00000000,
-    CANopen.ODI_ERROR: 0x00,
-    CANopen.ODI_HEARTBEAT_PRODUCER_TIME: 1000, # 16-bit, in ms
-    CANopen.ODI_IDENTITY: CANopen.Object({
-        CANopen.ODSI_VALUE: 4,
-        CANopen.ODSI_IDENTITY_VENDOR: 0x00000000,
-        CANopen.ODSI_IDENTITY_PRODUCT: 0x00000001,
-        CANopen.ODSI_IDENTITY_REVISION: 0x00000000,
-        CANopen.ODSI_IDENTITY_SERIAL: 0x00000001,
-    }),
-})
-
-node = CANopen.Node(CAN.Bus("vcan0"), NODE_ID, object_dictionary)
-node.boot() // Starts node, transmit only
-node.listen(True) // Allows node to listen to bus
-```
-
-Alternatively, `node.listen(True)` can be replaced with `node.recv(msg: CAN.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.recv(msg: CAN.Message)` and `Node.listen()` are not. 
+Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: CANopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: CAN.Message)` and `Node.listen()` are not. 
 
 Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
 ---------------------------------------------------------------------
 
-8. Setup webserver
-    * Copy [canhttp.py](/canhttp.py) to `/home/pi/`
-    * Copy [canhttp](/canhttp) to `/etc/init.d/`
-    * `sudo update-rc.d canhttp defaults`
-    
-8. Setup CAN-to-HTTP Adapter
-    * Copy [canopen-master.py](/canopen-master.py) to `/home/pi/`
-    * Copy [canopen-master](/canopen-master) to `/etc/init.d/`
-    * `sudo update-rc.d canopen-master defaults`
+8. Setup CANopen Master
+    1. Copy [canopen-master.py](/canopen-master.py) to `/home/pi/`
+    2. Copy [canopen-master.service](/canopen-master.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
-9. Reboot: `sudo reboot`
+8. Setup CAN-to-HTTP Adapter
+    1. Copy [canhttp.py](/canhttp.py) to `/home/pi/`
+    2. Copy [canhttp.service](/canhttp.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
+    
 
 HTTP to CAN API
 ========================

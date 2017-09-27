@@ -47,7 +47,7 @@ class Message:
             self.timestamp = None
 
         self.arbitration_id = arbitration_id & 0x1FFFFFFF
-        self.data = bytearray(data)
+        self.data = bytearray(data[:8])
 
     def __bytes__(self):
         arbitration_id = self.arbitration_id
