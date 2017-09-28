@@ -15,18 +15,36 @@ from time import sleep, time
 import traceback
 from urllib.parse import parse_qs, urlparse
 
-CAN_INTERFACES = ["can0", "can1"] # Must be a list
+# Server constants
+CAN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
 HTTP_SERVER_IP_ADDRESS = "" # Empty string for any address
 HTTP_SERVER_PORT = 8002
 WWW_DIR = path.dirname(path.realpath(__file__))
 
-default_net = "can0" # When 'default' net is specified
+# Gateway variables (default value assignments)
+default_net = "vcan0" # When 'default' net is specified
 default_node_id = 0xFF # 0xFF = Invalid
-command_timeout = 1 # In seconds (value sent in ms)
-sdo_timeout = 1 # In seconds (value sent in ms)
+command_timeout = 1 # Default, in seconds (value sent in ms)
+sdo_timeout = 1 # Default, in seconds (value sent in ms)
+rpdos = {}
+tpdos = {}
 
 def sigterm_handler(signum, frame):
     sys.exit()
+
+def coerce(value, datatype):
+    if value is None:
+        return ValueError("Unable to coerce undefined value")
+    if datatype == "b": # Boolean
+        return bool(value)
+    if datatype in ["u8", "u16", "u24", "u32", "u40", "u48", "u56", "u64", "i8", "i16", "i24", "i32", "i40", "i48", "i56", "i64"]:
+        return int(value, 0)
+    if datatype in ["r32", "r64"]:
+        return float(value)
+    if datatype in ["t", "td", "vs", "os", "us", "d"]:
+        raise NotImplementedError
+    raise ValueError("Unknown datatype: " + str(datatype))
+
 
 def parse_request(request):
     match = re.match('/cia309-5/(\d+\.\d+)/(\d{1,10})/(0x[0-9a-f]{1,4}|\d{1,10}|default|none|all)/(0x[0-9a-f]{1,2}|\d{1,3}|default|none|all)/(.*)', request, re.IGNORECASE)
@@ -73,7 +91,7 @@ def parse_net(net):
     if net == 'default':
         net = default_net
     else:
-        net = CAN_INTERFACES[net - 1]
+        net = CAN_INTERFACES[int(net) - 1]
     return CAN.Bus(net)
 
 def parse_command(command):
@@ -115,21 +133,16 @@ def parse_command(command):
         raise ValueError("invalid command: " + command)
     return command_specifier
 
-def parse_index(index, subindex=False):
-    if index[0] == '0' and index[1] == 'x':
-        index = int(index, 16)
-    else:
-        index = int(index)
-    if index > (0xFF if subindex else 0xFFFF):
-        raise ValueError("invalid " + ("sub" if subindex else "") + "index: " + str(index))
-    return index
+def parse_int(value, max=sys.maxsize):
+    int_value = int(value, 0)
+    if int_value > max:
+        raise ValueError("invalid integer value: " + str(value))
+    return int_value
 
-def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest) -> CANopen.SdoResponse:
-    global sdo_timeout
-
+def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest, timeout) -> CANopen.SdoResponse:
     bus.send(request)
-    timeout = time() + sdo_timeout
-    dtimeout = sdo_timeout
+    timeout_time = time() + timeout
+    dtimeout = timeout
     while dtimeout > 0:
         rlist, _, _ = select([bus], [], [], dtimeout)
         if len(rlist) > 0:
@@ -143,10 +156,35 @@ def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest) -> CANopen.SdoResponse:
                 if isinstance(request, CANopen.SdoDownloadRequest) and isinstance(response, CANopen.SdoDownloadResponse):
                     return response
                 # Unsupported CANopen.SdoResponse, ignore and keep listening
-            dtimeout = timeout - time()
+            dtimeout = timeout_time - time()
         else:
             raise CANopen.SdoTimeout # Timeout from select
     raise CANopen.SdoTimeout
+
+def read_pdo(bus: CAN.Bus, nr, timeout):
+    global rpdos
+    rpdo = rpdos.get(nr)
+    if rpdo is None:
+        raise ValueError
+    cob = rpdo.get('cob')
+    if cob is None:
+        raise ValueError
+    datatypes = rpdo.get('datatypes')
+    if datatypes is None:
+        raise ValueError
+    timeout_time = time() + timeout
+    dtimeout = timeout
+    while dtimeout > 0:
+        rlist, _, _ = select([bus], [], [], dtimeout)
+        if len(rlist) > 0:
+            bus = rlist[0]
+            msg = bus.recv()
+            if msg.arbitration_id & 0x7FF == rpdos.get(nr).get('cob'):
+                return list(msg.data) # TODO: Unpack data based on data types
+            dtimeout = timeout_time - time()
+        else:
+            raise Exception # Timeout
+    return list(range(len(datatypes)))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     pass
@@ -157,7 +195,7 @@ class BadRequest(BaseException):
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        global sdo_timeout
+        global sdo_timeout, rpdos, tpdos
         request = urlparse(self.path).path
         content_len = int(self.headers.get('content-length', 0)) # access POST/PUT body
         if content_len == 0:
@@ -222,72 +260,127 @@ class RequestHandler(BaseHTTPRequestHandler):
                     sdo_timeout = value / 1000
                     command_response["response"] = "OK"
 
+                elif command == 'set/rpdo':
+                    try:
+                        nr = parse_int(parameters.get("nr"), 512)
+                        cob = parse_int(parameters.get("COB"), 0xFFFFFFFF)
+                        nr_of_data = parse_int(parameters.get("nr-of-data"), 0x40)
+                        rpdo = rpdos.get(nr, {})
+                        rpdo['cob'] = cob
+                        mappings = []
+                        datatypes = []
+                        for i in range(nr_of_data):
+                            map_obj = parameters.get("map-obj" + str(i + 1))
+                            if map_obj is None:
+                                raise BadRequest
+                            if type(map_obj) is list:
+                                index = parse_int(map_obj[0], 0xFFFF)
+                                subindex = parse_int(map_obj[1], 0xFF)
+                                mapping = {'index': index, 'subindex': subindex}
+                                mappings.append(mapping)
+                            else:
+                                datatypes.append(map_obj)
+                        if len(mappings) == 0:
+                            rpdo['datatypes'] = datatypes
+                        else:
+                            rpdo['mappings'] = mappings
+                        rpdos.update({nr: rpdo})
+                    except ValueError as e:
+                        raise BadRequest(e)
+                    command_response["response"] = "OK"
+
+                elif command == 'set/tpdo':
+                    raise NotImplementedError
+
                 elif command[0:2] == 'r/' or command[0:5] == 'read/' or command[0:2] == 'w/' or command[0:6] == 'write/':
                     match = re.match('(r|read|w|write)/(all|0x[0-9a-f]{1,4}|\d{1,5})/?(0x[0-9a-f]{1,2}|\d{1,3})?', command, re.IGNORECASE)
+                    if match is None:
+                        match = re.match('(r|read|w|write)/(p|pdo)/(0x[0-9a-f]{1,3}|\d{1,4})', command, re.IGNORECASE)
 
                     command_specifier = match.group(1)
-
                     index = match.group(2)
-                    if index == 'all':
-                        raise NotImplementedError
-                    try:
-                        index = parse_index(index)
-                    except ValueError as e:
-                        raise BadRequest(e)
 
-                    subindex = match.group(3)
-                    try:
-                        subindex = parse_index(subindex, True)
-                    except ValueError as e:
-                        raise BadRequest(e)
-
-                    if command_specifier == 'r' or command_specifier == 'read':
-                        if node == 'all':
-                            raise NotImplementedError # May not be a valid request
-                        if node != 'none':
-                            if node == 'default':
-                                node_id = default_node_id
+                    if index == 'p' or index == 'pdo':
+                        nr = parse_int(match.group(3), 0x200)
+                        rpdo = rpdos.get(nr)
+                        if rpdo is None:
+                            command_response["response"] = "ERROR:100"
+                        else:
+                            mappings = rpdo.get('mappings')
+                            datatypes = rpdo.get('datatypes')
+                            print("reading pdo")
+                            values = read_pdo(bus, nr, 10)
+                            print(str(len(mappings)) + "," + str(len(datatypes)) + "," + str(len(values)))
+                            if mappings is None or datatypes is None or values is None or len(mappings) != len(datatypes) or len(mappings) != len(values):
+                                command_response["response"] = "ERROR:100"
                             else:
-                                node_id = node
+                                command_response["net"] = net
+                                command_response["nr"] = nr
+                                command_response["nr-of-data"] = len(mappings)
+                                command_response["value"] = values
 
-                            if index == 'all':
-                                raise NotImplementedError # "Resource", should use EDS
+                    else:
 
-                            req = CANopen.SdoUploadRequest(node_id, index, subindex)
-                            res = exec_sdo(bus, req)
-                            command_response["data"] = "0x{:08X}".format(res.sdo_data)
-                            command_response["length"] = "u32" # Lookup data type in EDS?
+                        if index == 'all':
+                            raise NotImplementedError
+                        try:
+                            index = parse_int(index, 0xFFFF)
+                        except ValueError as e:
+                            raise BadRequest(e)
 
-                    elif command_specifier == 'w' or command_specifier == 'write':
-                        if node == 'all':
-                            raise NotImplementedError # May not be a valid request
-                        if node != 'none':
-                            if node == 'default':
-                                node_id = default_node_id
-                            else:
-                                node_id = node
+                        subindex = match.group(3)
+                        try:
+                            subindex = parse_int(subindex, 0xFF)
+                        except ValueError as e:
+                            raise BadRequest(e)
 
-                            if index == 'all':
-                                raise BadRequest("invalid index: all")
+                        if command_specifier == 'r' or command_specifier == 'read':
+                            if node == 'all':
+                                raise NotImplementedError # May not be a valid request
+                            if node != 'none':
+                                if node == 'default':
+                                    node_id = default_node_id
+                                else:
+                                    node_id = node
 
-                            if not 'datatype' in parameters:
-                                print('here')
-                                raise BadRequest("datatype is required")
-                            datatype = parameters.get("datatype")
-                            if datatype not in ["b", "u8", "u16", "u24", "u32", "u40", "u48", "u56", "u64", "i8", "i16", "i24", "i32", "i40", "i48", "i56", "i64", "r32", "r64", "t", "td", "vs", "os", "us", "d"]:
-                                raise BadRequest("unknown datatype: " + datatype)
+                                if index == 'all':
+                                    raise NotImplementedError # "Resource", should use EDS
 
-                            if not 'value' in parameters:
-                                raise BadRequest("value is required")
-                            value = parameters.get("value")
+                                req = CANopen.SdoUploadRequest(node_id, index, subindex)
+                                res = exec_sdo(bus, req, sdo_timeout)
+                                command_response["data"] = "0x{:08X}".format(res.sdo_data)
+                                command_response["length"] = "u32" # Lookup data type in EDS?
 
-                            # TODO: Look these up based on datatype and validate value
-                            n = 0
-                            e = 1
-                            s = 1
-                            req = CANopen.SdoDownloadRequest(node_id, n, e, s, index, subindex, value)
-                            res = exec_sdo(bus, req)
-                            command_response["response"] = "OK"
+                        elif command_specifier == 'w' or command_specifier == 'write':
+                            if node == 'all':
+                                raise NotImplementedError # May not be a valid request
+                            if node != 'none':
+                                if node == 'default':
+                                    node_id = default_node_id
+                                else:
+                                    node_id = node
+
+                                if index == 'all':
+                                    raise BadRequest("invalid index: all")
+
+                                if not 'datatype' in parameters:
+                                    raise BadRequest("datatype is required")
+                                datatype = parameters.get("datatype")
+                                if not 'value' in parameters:
+                                    raise BadRequest("value is required")
+
+                                try:
+                                    value = coerce(parameters.get("value"), parameters.get("datatype"))
+                                except:
+                                    raise BadRequest("invalid value/datatype")
+
+                                # TODO: Look these up based on datatype and validate value
+                                n = 0
+                                e = 1
+                                s = 1
+                                req = CANopen.SdoDownloadRequest(node_id, n, e, s, index, subindex, value)
+                                res = exec_sdo(bus, req, sdo_timeout)
+                                command_response["response"] = "OK"
 
                 else:
                     raise BadRequest("invalid command: " + command)
@@ -303,15 +396,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(bytes(json.dumps(command_response) + "\n", 'utf-8'))
 
         except BadRequest as e:
+            print("Bad Request: " + str(e))
             self.send_response(400)
             self.send_error(400, 'Bad Request: %s' % str(e.args))
         except BrokenPipeError:
             print('Connection closed.')
-        except IOError:
-            self.send_response(500)
-            print("\n*** do_GET except ***")
+        except:
             print("Unexpected error:", sys.exc_info()[0])
             traceback.print_exc()
+            self.send_response(500)
+            self.send_error(500, 'Unexpected Error')
 
     def do_POST(self):
         self.do_GET()

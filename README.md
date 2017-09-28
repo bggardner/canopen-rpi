@@ -20,7 +20,10 @@ Initilization scripts and instructions for starting the node applications at boo
 Protocol Adaptors
 -----------------
 
-Two example protocol adaptors for HTTP (`canhttp.py`, see below for API) and UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure) are provided.  Note that these are very crude and do not provide buffering.  Initilization scripts and instructions for starting the adapters at boot are also provided.
+Example protocol adaptors are provided: Note that these are very crude and do not provide buffering.
+* CAN-to-HTTP (`canhttp.py`, see below for API)
+* CAN-to-UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure)
+* CANopen-to-HTTP (`canopen-http.py`, implementation of CiA 309-5)
 
 Raspberry Pi Setup
 ==================
