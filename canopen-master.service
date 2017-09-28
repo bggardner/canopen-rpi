@@ -1,0 +1,10 @@
+[Unit]
+Description=CANopen Master Daemon
+After=can_if.service
+
+[Service]
+Type=idle
+ExecStart=/home/pi/canopen-master.py
+
+[Install]
+WantedBy=can_if.service

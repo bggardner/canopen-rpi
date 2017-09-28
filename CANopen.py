@@ -1245,14 +1245,14 @@ class Node:
     def _listen(self):
         while True:
             msg = self.recv()
-            self.process(msg)
+            self.process_msg(msg)
 
     def boot(self):
         self._send_bootup()
         self.nmt_state = NMT_STATE_PREOPERATIONAL
         self._process_timers()
 
-    def process(self, msg: Message):
+    def process_msg(self, msg: Message):
         id = msg.arbitration_id
         data = msg.data
         rtr = msg.is_remote_frame
@@ -1407,9 +1407,10 @@ class Node:
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
 
     def recv(self):
-        rlist, _, _, = select([self.bus], [], [])
-        return Message.factory(self.bus.recv())
-
+        while True:
+            rlist, _, _, = select([self.bus], [], [])
+            if len(rlist) > 0:
+                return Message.factory(self.bus.recv())
 
     def reset(self):
         self.od = self._default_od
