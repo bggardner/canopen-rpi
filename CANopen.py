@@ -1082,12 +1082,17 @@ class Node:
                 self._err_indicator_timer.start()
             else:
                 raise TypeError
+        else:
+            self._err_indicator = None
+            self._err_indicator_timer = None
 
         if "run_indicator" in kwargs:
             if isinstance(kwargs["run_indicator"], RunIndicator):
                 self._run_indicator = kwargs["run_indicator"]
             else:
                 raise TypeError
+        else:
+            self._run_indicator = None
 
         self.od = self._default_od
         self.nmt_state = NMT_STATE_INITIALISATION
@@ -1097,8 +1102,15 @@ class Node:
         self._sync_counter = 0
         self._sync_timer = None
 
-    def __del__(self):
+    def cleanup(self):
         self._reset_timers()
+        if self._heartbeat_producer_timer is not None:
+            self._heartbeat_producer_timer.join(0)
+        if self._sync_producer_timer is not None:
+            self._sync_producer_timer.join(0)
+        if self._err_indicator_timer is not None:
+            self._err_indicator_timer.join(0)
+        del self
 
     def _heartbeat_consumer_timeout(self, id):
         if self.nmt_state != NMT_STATE_STOPPED:
@@ -1159,6 +1171,8 @@ class Node:
             self._heartbeat_producer_timer.cancel()
         if self._sync_timer is not None and self._sync_timer.is_alive():
             self._sync_timer.cancel()
+        if self._err_indicator_timer is not None and self._err_indicator_timer.is_alive():
+            self._err_indicator_timer.cancel()
 
     def _send(self, msg: CAN.Message):
         return self.bus.send(msg)

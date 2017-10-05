@@ -21,6 +21,10 @@ PIN_ERRLED1 = 5
 
 def sigterm_handler(signum, frame):
     GPIO.cleanup()
+    try:
+        node.cleanup() # Needed to clean up timer threads
+    except:
+        pass
     exit()
 
 signal.signal(signal.SIGTERM, sigterm_handler)
