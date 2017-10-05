@@ -1178,7 +1178,7 @@ class Node:
         return self.bus.send(msg)
 
     def _send_bootup(self):
-        msg = CAN.Message((FUNCTION_CODE_NMT_ERROR_CONTROL << FUNCTION_CODE_BITNUM) + self.id)
+        msg = BootupMessage(self.id)
         return self._send(msg)
 
     def _send_emcy(self, eec, msef=0):
