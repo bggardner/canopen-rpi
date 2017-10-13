@@ -73,10 +73,8 @@ Add CAN Support
 2. Configure SPI Module: Change `/boot/config.txt` to:
 
     ```
-    dtparam=spi=on
     dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
     dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
-    dtoverlay=spi-bcm2835
     ```
     *Note: It appears the order of the mcp2515-can\* overlay determines which SPI CE is used (first listing gets spi0.1/CE1, second listing get spi0.0/CE0), even though the documentation says otherwise.  See https://github.com/raspberrypi/linux/issues/1490 for more info.*
     
