@@ -73,10 +73,8 @@ Add CAN Support
 2. Configure SPI Module: Change `/boot/config.txt` to:
 
     ```
-    dtparam=spi=on
     dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
     dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
-    dtoverlay=spi-bcm2835
     ```
     *Note: It appears the order of the mcp2515-can\* overlay determines which SPI CE is used (first listing gets spi0.1/CE1, second listing get spi0.0/CE0), even though the documentation says otherwise.  See https://github.com/raspberrypi/linux/issues/1490 for more info.*
     
@@ -90,12 +88,12 @@ Add CAN Support
     sudo ip link set can1 up type can bitrate 1000000
     ```
     * Automatic (start at boot-up)
-        # Copy [can_if](https://github.com/linux-can/can-misc/blob/master/etc/can_if) to `/home/pi/` (or change location in `can_if.service`
-        # Modify `can_if` line `CAN_IF=""` to `CAN_IF="can0@1000000,2000 can1@1000000,2000"` *(may vary per application)*
-        # Copy `can_if.service` to `/etc/systemd/system/`
-        # `sudo systemctl daemon-reload`
-        # `sudo systemctl enable can_if.service`
-        # `sudo reboot` or `sudo systemctl start can_if.service`
+        1. Copy [can_if](https://github.com/linux-can/can-misc/blob/master/etc/can_if) to `/home/pi/` (or change location in `can_if.service`
+        2. Modify `can_if` line `CAN_IF=""` to `CAN_IF="can0@1000000,2000 can1@1000000,2000"` *(may vary per application)*
+        3. Copy `can_if.service` to `/etc/systemd/system/`
+        4. `sudo systemctl daemon-reload`
+        5. `sudo systemctl enable can_if.service`
+        6. `sudo reboot` or `sudo systemctl start can_if.service`
 
 4. (Optional) Install `can-utils` for debugging
 
