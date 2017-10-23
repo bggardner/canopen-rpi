@@ -8,7 +8,7 @@ import configparser
 from enum import Enum, IntEnum, unique
 from select import select
 import struct
-from threading import Event, Thread, Timer
+from threading import Event, Thread, Timer, enumerate
 from time import sleep
 
 BROADCAST_NODE_ID = 0
@@ -1102,15 +1102,11 @@ class Node:
         self._sync_counter = 0
         self._sync_timer = None
 
-    def cleanup(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self._reset_timers()
-        if self._heartbeat_producer_timer is not None:
-            self._heartbeat_producer_timer.join(0)
-        if self._sync_producer_timer is not None:
-            self._sync_producer_timer.join(0)
-        if self._err_indicator_timer is not None:
-            self._err_indicator_timer.join(0)
-        del self
 
     def _heartbeat_consumer_timeout(self, id):
         if self.nmt_state != NMT_STATE_STOPPED:
@@ -1253,7 +1249,7 @@ class Node:
         if blocking:
             self._listen()
         else:
-            self._listener = Thread(target=self._listen)
+            self._listener = Thread(target=self._listen, daemon=True)
             self._listener.start()
 
     def _listen(self):
@@ -1416,7 +1412,7 @@ class Node:
                             heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
                             break;
             if heartbeat_consumer_time != 0:
-                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
+                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id], daemon=True)
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
 

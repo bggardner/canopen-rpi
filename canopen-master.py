@@ -21,10 +21,6 @@ PIN_ERRLED1 = 5
 
 def sigterm_handler(signum, frame):
     GPIO.cleanup()
-    try:
-        node.cleanup() # Needed to clean up timer threads
-    except:
-        pass
     exit()
 
 signal.signal(signal.SIGTERM, sigterm_handler)
@@ -297,20 +293,23 @@ while True:
                     node.boot()
                     print("Rebooted")
                 except NameError:
-                    node = CANopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0)
                     print("First boot")
+
+                with CANopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0) as node:
                     node.boot()
 
-                try:
-                    node.listen(True)
-                except CAN.BusDown:
-                    sleep(1)
-                    continue
+                    try:
+                        node.listen(True)
+                    except CAN.BusDown:
+                        sleep(1)
+                        continue
+
             except ResetCommunication:
                 try:
                     node.reset_communication()
                 except NameError:
                     pass
+
     except ResetNode:
         try:
             node.reset()
