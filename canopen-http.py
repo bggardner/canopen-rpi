@@ -13,7 +13,7 @@ import struct
 import sys
 from time import sleep, time
 import traceback
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qsl, urlparse
 
 # Server constants
 CAN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
@@ -197,13 +197,18 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global sdo_timeout, rpdos, tpdos
         request = urlparse(self.path).path
+
+        if request == "/favicon.ico":
+            self.send_response(204)
+            return
+
         content_len = int(self.headers.get('content-length', 0)) # access POST/PUT body
         if content_len == 0:
             parameters = {}
         else:
             body = self.rfile.read(content_len) # read POST/PUT body
             body = body.decode('utf-8')
-            parameters = json.loads(body)
+            parameters = dict(parse_qsl(body))
 
         try: # excepts bad stuff
             try: # excepts for HTTP 200
@@ -364,6 +369,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                                     raise BadRequest("invalid index: all")
 
                                 if not 'datatype' in parameters:
+                                    print(str(parameters))
                                     raise BadRequest("datatype is required")
                                 datatype = parameters.get("datatype")
                                 if not 'value' in parameters:
@@ -391,6 +397,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 command_response["response"] = "ERROR:103"
 
             self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'X-Requested-With')
             self.send_header('Content-type', 'application/json; charset=utf-8')
             self.end_headers()
             self.wfile.write(bytes(json.dumps(command_response) + "\n", 'utf-8'))
@@ -406,6 +415,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self.send_response(500)
             self.send_error(500, 'Unexpected Error')
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'X-Requested-With')
+        self.send_header('Access-Control-Allow-Headers', 'Content-type')
+        self.end_headers()
 
     def do_POST(self):
         self.do_GET()

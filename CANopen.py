@@ -539,23 +539,25 @@ class ObjectDictionary(MutableMapping):
     def from_eds(filename):
         eds = configparser.ConfigParser()
         eds.read(filename)
-        od = ObjectDictionary()
         indices = []
         for section in ['MandatoryObjects', 'OptionalObjects', 'ManufacturerObjects']:
             if section not in eds:
                 continue
             n = int(eds[section]['SupportedObjects'])
             for i in range(1, n + 1):
-                indices.append(int(eds['MandatoryObjects'][str(i)], 0))
+                indices.append(int(eds[section][str(i)], 0))
         od = {}
         for i in indices:
             oc = eds["{:4X}".format(i)]
-            sub_number = int(oc['SubNumber'], 0)
+            sub_number = int(oc.get('SubNumber', '0'), 0)
             subs = {}
-            if sub_number > 0:
-                for si in range(sub_number + 1):
-                    sub = SubObject.from_config(eds["{:4X}sub{:d}".format(i, si)])
+            si = 0
+            while len(subs) < sub_number and si <= 0xFF:
+                key = "{:4X}sub{:d}".format(i, si)
+                if key in eds:
+                    sub = SubObject.from_config(eds[key])
                     subs.update({si: sub})
+                si += 1
             o = Object.from_config(oc, subs)
             od.update({i: o})
         return ObjectDictionary(od)
@@ -666,9 +668,9 @@ class ProtoObject(MutableMapping):
                 return len(self._store) - 2 # Don't count sub-indices 0x00 and 0xFF
         return len(self._store) - 1 # Don't count sub-index 0
 
-    def __setattr__(self, name, value):
+    def __setitem__(self, name, value):
         # TODO: Prevent writing of read-only indices
-        super().__setattr__(name, value)
+        super().__setitem__(name, value)
 
     def update(self, other=None, **kwargs):
         if other is not None:
@@ -677,8 +679,8 @@ class ProtoObject(MutableMapping):
             for subindex, value in kwargs.items():
                 self[subindex] = value
 
-    @classmethod
-    def from_config(cls, cfg):
+    @staticmethod
+    def _from_config(cfg):
         parameter_name = cfg['ParameterName']
         if 'ObjectType' in cfg:
             object_type = ObjectType(int(cfg['ObjectType'], 0))
@@ -693,7 +695,10 @@ class ProtoObject(MutableMapping):
         else:
             access_type = None
         if 'DefaultValue' in cfg:
-            default_value = int(cfg['DefaultValue'], 0) # TODO for non-integer values
+            try:
+                default_value = int(cfg['DefaultValue'], 0)
+            except ValueError:
+                default_value = cfg['DefaultValue'] # TODO: Validate values
         else:
             default_value = None
         if 'PDOMapping' in cfg:
@@ -723,7 +728,7 @@ class SubObject(ProtoObject):
 
     @classmethod
     def from_config(cls, cfg):
-        po = ProtoObject.from_config(cfg)
+        po = super()._from_config(cfg)
         return cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,
@@ -789,7 +794,7 @@ class Object(ProtoObject):
 
     @classmethod
     def from_config(cls, cfg, subs):
-        po = ProtoObject.from_config(cfg)
+        po = super()._from_config(cfg)
         return cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,
@@ -797,7 +802,7 @@ class Object(ProtoObject):
             access_type=po.access_type,
             default_value=po.default_value,
             pdo_mapping=po.pdo_mapping,
-            sub_number=int(cfg['SubNumber'], 0),
+            sub_number=int(cfg.get('SubNumber', '0'), 0),
             subs=subs
         )
 
