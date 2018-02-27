@@ -989,7 +989,7 @@ class SdoRequest(SdoMessage):
 
     @classmethod
     def factory(cls, node_id, data):
-        cmd, index, subindex, data = struct.unpack("<BHBI", data)
+        cmd, index, subindex, data = struct.unpack("<BHBI", data.ljust(8, b'\x00'))
         cs = (cmd >> SDO_CS_BITNUM) & (2 ** SDO_CS_LENGTH - 1)
         n = (cmd >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
         e = (cmd >> SDO_E_BITNUM) & 1
@@ -1412,7 +1412,7 @@ class Node:
                             heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
                             break;
             if heartbeat_consumer_time != 0:
-                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id], daemon=True)
+                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
 

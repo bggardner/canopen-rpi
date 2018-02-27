@@ -105,7 +105,12 @@ class Bus(socket.socket):
         return msg
 
     def send(self, msg: Message):
-        return super().send(bytes(msg))
+        try:
+            return super().send(bytes(msg))
+        except OSError as e:
+            if e.errno == errno.ENETDOWN:
+                raise BusDown
+            raise
 
     def sendall(self, msg: Message):
         return super().sendall(bytes(msg))
