@@ -1,6 +1,6 @@
 [Unit]
 Description=CAN Interface Configuration Daemon
-After=multi-user.target
+#After=multi-user.target
 
 [Service]
 Type=idle
@@ -9,4 +9,4 @@ ExecStop=/home/pi/can_if stop
 RemainAfterExit=yes
 
 [Install]
-WantedBy=multi-user.target
+#WantedBy=multi-user.target
