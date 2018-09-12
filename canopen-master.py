@@ -11,13 +11,13 @@ from sys import exit
 DEFAULT_CAN_INTERFACE = "vcan0"
 REDUNDANT_CAN_INTERFACE = "vcan1"
 
-PIN_ENABLE_N = 42
-PIN_ADDRESS_N = list(range(34, 41))
-PIN_ADDRESS_PARITY_N = 41
-PIN_RUNLED0 = 2
-PIN_ERRLED0 = 3
-PIN_RUNLED1 = 4
-PIN_ERRLED1 = 5
+PIN_ENABLE_N = 16
+PIN_ADDRESS_N = [12, 13, 14, 15, 17, 18, 19]
+PIN_ADDRESS_PARITY_N = 20
+PIN_RUNLED0 = 41
+PIN_ERRLED0 = 40
+PIN_RUNLED1 = 39
+PIN_ERRLED1 = 38
 
 def sigterm_handler(signum, frame):
     GPIO.cleanup()
@@ -26,9 +26,9 @@ def sigterm_handler(signum, frame):
 signal.signal(signal.SIGTERM, sigterm_handler)
 
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(PIN_ENABLE_N, GPIO.IN)
-GPIO.setup(PIN_ADDRESS_N, GPIO.IN)
-GPIO.setup(PIN_ADDRESS_PARITY_N, GPIO.IN)
+GPIO.setup(PIN_ENABLE_N, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(PIN_ADDRESS_N, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(PIN_ADDRESS_PARITY_N, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 runled0 = CANopen.RunIndicator(PIN_RUNLED0)
 errled0 = CANopen.ErrorIndicator(PIN_ERRLED0)
@@ -76,6 +76,7 @@ while True:
                     sleep(1)
                     raise ResetCommunication
 
+                print("Booting with Node ID: {:d}".format(node_id))
                 canopen_od = CANopen.ObjectDictionary({
                     CANopen.ODI_DEVICE_TYPE: CANopen.Object(
                         parameter_name="Device type",
@@ -96,7 +97,7 @@ while True:
                         object_type=CANopen.ObjectType.VAR,
                         access_type=CANopen.AccessType.CONST,
                         data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
-                        default_value=0x40000000 + (CANopen.FUNCTION_CODE_SYNC << CANopen.FUNCTION_CODE_BITNUM), # SYNC producer
+                        default_value=0x00000000 + (CANopen.FUNCTION_CODE_SYNC << CANopen.FUNCTION_CODE_BITNUM), # 0x40000000 + ... if SYNC producer
                     ),
                     CANopen.ODI_SYNC_TIME: CANopen.Object(
                         parameter_name="Communication cycle period",
@@ -284,6 +285,77 @@ while True:
                                 low_limit=0x00000000,
                                 high_limit=0xFFFFFFFF,
                                 default_value=(CANopen.ODI_SYNC_TIME << 16) + (CANopen.ODSI_VALUE << 8) + 32
+                            ),
+                        }
+                    ),
+                    CANopen.ODI_NMT_STARTUP: CANopen.Object(
+                        parameter_name="NMT Startup",
+                        object_type=CANopen.ObjectType.VAR,
+                        access_type=CANopen.AccessType.CONST,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=0x00000023 # Flying master, NMT master start, NMT master
+                    ),
+                    CANopen.ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS: CANopen.Object(
+                        parameter_name="NMT flying master timing parameters",
+                        object_type=CANopen.ObjectType.ARRAY,
+                        data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                        sub_number=6,
+                        subs={
+                            CANopen.ODSI_VALUE: CANopen.SubObject(
+                                parameter_name="Highest sub-index supported",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x06,
+                                high_limit=0x06,
+                                default_value=0x06
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT: CANopen.SubObject(
+                                parameter_name="NMT master timeout",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=100
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DELAY: CANopen.SubObject(
+                                parameter_name="NMT master negotiation time delay",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=500
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY: CANopen.SubObject(
+                                parameter_name="NMT master priority",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=(node_id - 1) & 0x3
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT: CANopen.SubObject(
+                                parameter_name="Priority time slot",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=1500
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT: CANopen.SubObject(
+                                parameter_name="CANopen device time slot",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=10
+                            ),
+                            CANopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME: CANopen.SubObject(
+                                parameter_name="Multiple NMT master detect cycle time",
+                                access_type=CANopen.AccessType.CONST,
+                                data_type=CANopen.ODI_DATA_TYPE_UNSIGNED16,
+                                low_limit=0x0000,
+                                high_limit=0xFFFF,
+                                default_value=4000 + 10 * node_id
                             ),
                         }
                     ),

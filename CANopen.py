@@ -39,6 +39,12 @@ NMT_NODE_CONTROL_PREOPERATIONAL = 128
 NMT_NODE_CONTROL_RESET_NODE = 129
 NMT_NODE_CONTROL_RESET_COMMUNICATION = 130
 NMT_GFC = 1
+NMT_FLYING_MASTER_RESPONSE = 0x71
+NMT_FLYING_MASTER_REQUEST = 0x72
+NMT_ACTIVE_MASTER_REQUEST = 0x73
+NMT_MASTER_RESPONSE = 0x74
+NMT_MASTER_REQUEST = 0x75
+NMT_FORCE_FLYING_MASTER = 0x76
 
 # NMT states
 NMT_STATE_INITIALISATION = 0
@@ -122,6 +128,7 @@ ODSI_IDENTITY_VENDOR = 0x01
 ODSI_IDENTITY_PRODUCT = 0x02
 ODSI_IDENTITY_REVISION = 0x03
 ODSI_IDENTITY_SERIAL = 0x04
+ODI_NMT_INHIBIT_TIME = 0x102A
 ODI_SDO_SERVER = 0x1200
 ODSI_SDO_SERVER_DEFAULT_CSID = 0x01
 ODSI_SDO_SERVER_DEFAULT_SCID = 0x02
@@ -133,6 +140,26 @@ ODI_TPDO1_COMMUNICATION_PARAMETER = 0x1800
 ODSI_TPDO_COMM_PARAM_ID = 0x01
 ODSI_TPDO_COMM_PARAM_TYPE = 0x02
 ODI_TPDO1_MAPPING_PARAMETER = 0x1A00
+ODI_REDUNDANCY_CONFIGURATION = 0x1F60
+ODSI_REDUNDANCY_CONFIG_MAX_TX_DELAY_TIME = 0x01
+ODSI_REDUNDANCY_CONFIG_HB_EVAL_TIME_POWER_ON = 0x02
+ODSI_REDUNDANCY_CONFIG_HB_EVAL_TIME_RESET_COMM = 0x03
+ODSI_REDUNDANCY_CONFIG_CHAN_ERR_CNT_THRESHOLD = 0x04
+ODSI_REDUNDANCY_CONFIG_CHAN_ERR_CNT = 0x05
+ODI_NMT_STARTUP = 0x1F80
+ODI_REQUEST_NMT = 0x1F82
+ODI_BOOT_TIME = 0x1F89
+ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS = 0x1F90
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT = 0x01
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DELAY = 0x02
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY = 0x03
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT = 0x04
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT = 0x05
+ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME = 0x06
+ODI_SELF_STARTING_NODES_TIMING_PARAMETERS = 0x1F91
+ODSI_SELF_STARTING_NODES_TIMING_PARAMS_TIMEOUT = 0x01
+ODSI_SELF_STARTING_NODES_TIMING_PARAMS_DELAY = 0x02
+ODSI_SELF_STARTING_NODES_TIMING_PARAMS_TIME_SLOT = 0x03
 
 # SDO
 SDO_N_BITNUM = 3
@@ -892,7 +919,7 @@ class Message(CAN.Message):
     @classmethod
     def factory(cls, msg: CAN.Message):
         fc = msg.arbitration_id >> FUNCTION_CODE_BITNUM
-        node_id = msg.arbitration_id & 0x3F
+        node_id = msg.arbitration_id & 0x7F
         if fc == FUNCTION_CODE_NMT:
             return NmtMessage.factory(node_id, msg.data)
         if fc == FUNCTION_CODE_SYNC:
@@ -926,6 +953,18 @@ class NmtMessage(Message):
             return NmtNodeControlMessage.factory(data)
         if cmd == NMT_GFC:
             return NmtGfcMessage()
+        if cmd == NMT_FLYING_MASTER_RESPONSE:
+            return NmtFlyingMasterResponse.factory(data)
+        if cmd == NMT_FLYING_MASTER_REQUEST:
+            return NmtFlyingMasterRequest()
+        if cmd == NMT_ACTIVE_MASTER_REQUEST:
+            return NmtActiveMasterRequest()
+        if cmd == NMT_MASTER_RESPONSE:
+            return NmtMasterResponse()
+        if cmd == NMT_MASTER_REQUEST:
+            return NmtMasterRequest()
+        if cmd == NMT_FORCE_FLYING_MASTER:
+            return NmtForceFlyingMasterRequest()
         raise NotImplementedError
 
 class NmtNodeControlMessage(NmtMessage):
@@ -941,6 +980,35 @@ class NmtNodeControlMessage(NmtMessage):
 class NmtGfcMessage(NmtMessage):
     def __init__(self):
         super().__init__(NMT_GFC, bytes())
+
+class NmtFlyingMasterResponse(NmtMessage):
+    def __init__(self, priority, node_id):
+        super().__init__(NMT_FLYING_MASTER_RESPONSE, bytes([priority, node_id]))
+
+    @classmethod
+    def factory(cls, data):
+        priority, node_id = struct.unpack("<BB", data)
+        return cls(priority, node_id)
+
+class NmtFlyingMasterRequest(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_FLYING_MASTER_REQUEST, bytes())
+
+class NmtActiveMasterRequest(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_ACTIVE_MASTER_REQUEST, bytes())
+
+class NmtMasterResponse(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_MASTER_RESPONSE, bytes())
+
+class NmtMasterRequest(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_MASTER_REQUEST, bytes())
+
+class NmtForceFlyingMasterRequest(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_FORCE_FLYING_MASTER, bytes())
 
 class SyncMessage(Message):
     def __init__(self):
@@ -1106,6 +1174,9 @@ class Node:
         self._tpdo_triggers = [False, False, False, False]
         self._sync_counter = 0
         self._sync_timer = None
+        self._nmt_active_master = False
+        self._nmt_active_master_timer = None
+        self._nmt_flying_master_timer = None
 
     def __enter__(self):
         return self
@@ -1174,6 +1245,10 @@ class Node:
             self._sync_timer.cancel()
         if self._err_indicator_timer is not None and self._err_indicator_timer.is_alive():
             self._err_indicator_timer.cancel()
+        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+            self._nmt_active_master_timer.cancel()
+        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
+            self._nmt_flying_master_timer.cancel()
 
     def _send(self, msg: CAN.Message):
         return self.bus.send(msg)
@@ -1262,10 +1337,70 @@ class Node:
             msg = self.recv()
             self.process_msg(msg)
 
+    def _nmt_startup(self):
+        nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+        if nmt_startup_obj is not None:
+            nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+            if nmt_startup & 0x01: # NMT Master
+                if nmt_startup & 0x20: # NMT Flying Master
+                    self._nmt_flying_master_startup()
+                else:
+                    self._nmt_become_active_master()
+            elif (nmt_startup & 0x04) == 0: # Self-starting
+                    self.nmt_state = NMT_STATE_OPERATIONAL
+
+    def _nmt_flying_master_negotiation_request(self):
+        self._send(NmtFlyingMasterRequest())
+        self._nmt_flying_master_negotiation()
+
+    def _nmt_flying_master_negotiation_timeout(self):
+        nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+        priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
+        self._send(NmtFlyingMasterResponse(priority, self.id))
+        self._nmt_become_active_master()
+
+    def _nmt_flying_master_negotiation(self):
+        nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+        priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
+        priority_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT).value
+        device_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT).value
+        flying_master_response_wait_time = priority * priority_time_slot + self.id * device_time_slot
+        self._nmt_flying_master_timer = Timer(flying_master_response_wait_time / 1000, self._nmt_flying_master_negotiation_timeout)
+        self._nmt_flying_master_timer.start()
+
+    def __nmt_compare_flying_master_priority(self, priority):
+        nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+        own_priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
+        if priority < own_priority:
+            self._active_flying_master = False
+        else:
+            self._send(NmtForceFlyingMasterRequest())
+            Thread(target=self._nmt_flying_master_startup, daemon=True).start()
+
+    def _nmt_flying_master_startup(self):
+        flying_master_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+        flying_master_delay = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DELAY).value
+        sleep(flying_master_delay / 1000)
+        self._send(NmtActiveMasterRequest())
+        active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value
+        self._nmt_active_master_timer = Timer(active_nmt_master_timeout_time / 1000, self._nmt_flying_master_negotiation_request)
+        self._nmt_active_master_timer.start()
+
+    def _nmt_become_active_master(self):
+        self._nmt_active_master = True
+        self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, 0))
+        nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
+        if (nmt_startup & 0x04) == 0: # Self-starting
+            self.nmt_state = NMT_STATE_OPERATIONAL
+        if nmt_startup & 0xA:
+            self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
+
     def boot(self):
         self._send_bootup()
         self.nmt_state = NMT_STATE_PREOPERATIONAL
         self._process_timers()
+        self.listen()
+        Thread(target=self._nmt_startup, daemon=True).start()
 
     def process_msg(self, msg: Message):
         id = msg.arbitration_id
@@ -1313,6 +1448,32 @@ class Node:
                         self.reset()
                     elif cs == NMT_NODE_CONTROL_RESET_COMMUNICATION:
                         self.reset_communication()
+            elif command == NMT_FLYING_MASTER_RESPONSE: # Response from either an NmtActiveMasterRequest or NmtFlyingMasterRequest
+                if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+                    self._nmt_active_master_timer.cancel()
+                    self._nmt_compare_flying_master_priority(data[0])
+                if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
+                    self._nmt_flying_master_timer.cancel()
+                    self._nmt_compare_flying_master_priority(data[0])
+            elif command == NMT_ACTIVE_MASTER_REQUEST:
+                if self._nmt_active_master:
+                    nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+                    priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
+                    self._send(NmtFlyingMasterResponse(priority, self.id))
+            elif command == NMT_FLYING_MASTER_REQUEST:
+                nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+                if nmt_startup_obj is not None:
+                    nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+                    if nmt_startup & 0x21: # Is NMT Flying Master
+                        self._nmt_flying_master_negotiation()
+            elif command == NMT_MASTER_REQUEST:
+                nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+                if nmt_startup_obj is not None:
+                    nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+                    if nmt_startup & 0x01: # Is NMT Master
+                         self._send(NmtMasterResponse())
+            elif command == NMT_FORCE_FLYING_MASTER_REQUEST:
+                Thread(target=self._nmt_flying_master_negotiation, daemon=True).start()
         elif fc == FUNCTION_CODE_SYNC and self.nmt_state == NMT_STATE_OPERATIONAL:
             sync_obj = self.od.get(ODI_SYNC)
             if sync_obj is not None:
