@@ -1372,10 +1372,11 @@ class Node:
     def _nmt_compare_flying_master_priority(self, priority):
         nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
         own_priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
-        if priority < own_priority:
+        if priority <= own_priority:
             self._nmt_active_master = False
-            nmt_multiple_master_detect_cycle_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT).value
-            self._nmt_multiple_master_timer = Timer(nmt_multiple_master_detect_cycle_time / 1000, this._send, [NmtForceFlyingMasterRequest()])
+            nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value
+            self._nmt_multiple_master_timer = Timer(nmt_multiple_master_detect_time / 1000, this._send, [NmtForceFlyingMasterRequest()])
+            self._nmt_multiple_master_timer.start()
         else:
             self._send(NmtForceFlyingMasterRequest())
             Thread(target=self._nmt_flying_master_startup, daemon=True).start()
@@ -1481,7 +1482,7 @@ class Node:
                     nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
                     if nmt_startup & 0x01: # Is NMT Master
                          self._send(NmtMasterResponse())
-            elif command == NMT_FORCE_FLYING_MASTER_REQUEST:
+            elif command == NMT_FORCE_FLYING_MASTER:
                 if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
                     self._nmt_multiple_master_timer.cancel()
                 Thread(target=self._nmt_flying_master_negotiation, daemon=True).start()
