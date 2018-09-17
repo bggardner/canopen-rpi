@@ -1375,7 +1375,7 @@ class Node:
         if priority <= own_priority:
             self._nmt_active_master = False
             nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value
-            self._nmt_multiple_master_timer = Timer(nmt_multiple_master_detect_time / 1000, this._send, [NmtForceFlyingMasterRequest()])
+            self._nmt_multiple_master_timer = Timer(nmt_multiple_master_detect_time / 1000, self._send, [NmtForceFlyingMasterRequest()])
             self._nmt_multiple_master_timer.start()
         else:
             self._send(NmtForceFlyingMasterRequest())

@@ -369,12 +369,8 @@ while True:
 
                 with CANopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0) as node:
                     node.boot()
-
-                    try:
-                        node.listen(True)
-                    except CAN.BusDown:
-                        sleep(1)
-                        continue
+                    while True:
+                        pass
 
             except ResetCommunication:
                 try:
