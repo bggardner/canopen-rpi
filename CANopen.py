@@ -1178,6 +1178,7 @@ class Node:
         self._heartbeat_producer_timer = None
         self._listener = None
         self._nmt_active_master = False
+        self._nmt_active_master_id = None
         self._nmt_active_master_timer = None
         self._nmt_flying_master_timer = None
         self._nmt_multiple_master_timer = None
@@ -1382,8 +1383,10 @@ class Node:
             self._send(NmtForceFlyingMasterRequest())
             self._nmt_flying_master_startup()
 
-    def _nmt_active_master_timeout(self):
-        if self._first_boot:
+    def _nmt_active_master_timeout(self, first_boot=None):
+        if first_boot is None:
+            first_boot = self._first_boot
+        if first_boot:
             self._first_boot = False
             self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, 0))
             self._nmt_flying_master_startup()
@@ -1420,6 +1423,13 @@ class Node:
         self._nmt_active_master = False
         if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
             self._nmt_multiple_master_timer.cancel()
+        if self._nmt_active_master_id not in self._heartbeat_consumer_timers:
+            heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
+            if heartbeat_producer_object is not None:
+                heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
+                if heartbeat_producer_value is not None and heartbeat_producer_value.value != 0:
+                    self._nmt_active_master_timer = Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
+                    self._nmt_active_master_timer.start()
 
     def _boot(self):
         self._send(BootupMessage(self.id))
@@ -1481,21 +1491,26 @@ class Node:
                     elif cs == NMT_NODE_CONTROL_RESET_COMMUNICATION:
                         self.reset_communication()
             elif command == NMT_FLYING_MASTER_RESPONSE: # Response from either an NmtActiveMasterRequest or NmtFlyingMasterRequest
-                compare_priority = False
-                if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-                    self._nmt_active_master_timer.cancel()
-                    self._first_boot = False
-                    compare_priority = True
-                if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
-                    self._nmt_flying_master_timer.cancel()
-                    compare_priority = True
-                if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
-                    self._nmt_multiple_master_timer.cancel()
-                    compare_priority = True
-                if compare_priority:
-                    self._nmt_compare_flying_master_priority(data[0])
+                nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+                if nmt_startup_obj is not None:
+                    nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+                    if nmt_startup & 0x01: # Is NMT Master
+                        compare_priority = False
+                        self._nmt_active_master_id = data[1]
+                        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+                            self._nmt_active_master_timer.cancel()
+                            self._first_boot = False
+                            compare_priority = True
+                        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
+                            self._nmt_flying_master_timer.cancel()
+                            compare_priority = True
+                        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
+                            self._nmt_multiple_master_timer.cancel()
+                            compare_priority = True
+                        if compare_priority:
+                            self._nmt_compare_flying_master_priority(data[0])
             elif command == NMT_ACTIVE_MASTER_REQUEST:
-                if self._nmt_active_master:
+                if self.is_active_nmt_master:
                     nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
                     priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
                     self._send(NmtFlyingMasterResponse(priority, self.id))
@@ -1506,11 +1521,8 @@ class Node:
                     if nmt_startup & 0x21: # Is NMT Flying Master
                         self._nmt_flying_master_negotiation()
             elif command == NMT_MASTER_REQUEST:
-                nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
-                if nmt_startup_obj is not None:
-                    nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
-                    if nmt_startup & 0x01: # Is NMT Master
-                         self._send(NmtMasterResponse())
+                if self.is_nmt_master_capable:
+                 self._send(NmtMasterResponse())
             elif command == NMT_FORCE_FLYING_MASTER:
                 self._nmt_become_inactive_master()
                 self._nmt_flying_master_startup()
@@ -1607,6 +1619,15 @@ class Node:
             producer_id = id & 0x7F
             if producer_id in self._heartbeat_consumer_timers:
                 self._heartbeat_consumer_timers.get(producer_id).cancel()
+            elif self.is_nmt_master_capable and producer_id == self._nmt_active_master_id and self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+                self._nmt_active_master_timer.cancel()
+                heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
+                if heartbeat_producer_object is not None:
+                    heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
+                    if heartbeat_producer_value is not None and heartbeat_producer_value.value != 0:
+                        self._nmt_active_master_timer = Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
+                        self._nmt_active_master_timer.start()
+
             heartbeat_consumer_time = 0
             heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
             if heartbeat_consumer_time_object is not None:
@@ -1616,11 +1637,29 @@ class Node:
                         heartbeat_consumer_time_value = heartbeat_consumer_time_object.get(i)
                         if heartbeat_consumer_time_value is not None and heartbeat_consumer_time_value.value is not None and ((heartbeat_consumer_time_value.value >> 16) & 0x7F) == producer_id:
                             heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
-                            break;
+                            break
             if heartbeat_consumer_time != 0:
                 heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
+                if self.is_nmt_master_capable and producer_id == self._nmt_active_master_id:
+                    if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+                        self._nmt_active_master_timer.cancel()
+                    self._nmt_active_master_timer = Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
+                    self._nmt_active_master_timer.start()
+
+    @property
+    def is_active_nmt_master(self):
+        return self._nmt_active_master
+
+    @property
+    def is_nmt_master_capable(self):
+        nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+        if nmt_startup_obj is not None:
+            nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+            if nmt_startup & 0x01:
+                return True
+        return False
 
     def recv(self):
         while True:
