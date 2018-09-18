@@ -1253,8 +1253,6 @@ class Node:
             self._heartbeat_producer_timer.cancel()
         if self._sync_timer is not None and self._sync_timer.is_alive():
             self._sync_timer.cancel()
-        if self._err_indicator_timer is not None and self._err_indicator_timer.is_alive():
-            self._err_indicator_timer.cancel()
         if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
             self._nmt_active_master_timer.cancel()
         if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
