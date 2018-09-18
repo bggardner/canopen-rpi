@@ -368,9 +368,8 @@ while True:
                     print("First boot")
 
                 with CANopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0) as node:
-                    node.boot()
                     while True:
-                        pass
+                        pass # Replace with application code and interact with Object Dictionary (node.od)
 
             except ResetCommunication:
                 try:

@@ -926,7 +926,7 @@ class Message(CAN.Message):
             if node_id == 0x00:
                 return SyncMessage()
             else:
-                return EmcyMessage()
+                return EmcyMessage.factory(node_id, msg.data)
         if fc == FUNCTION_CODE_TPDO1:
             return PdoMessage(fc, node_id, msg.data)
         if fc == FUNCTION_CODE_TPDO2:
@@ -1018,6 +1018,11 @@ class EmcyMessage(Message):
     def __init__(self, emcy_id, eec, er, msef=0):
         data = struct.pack("<HBBI", eec, er, msef & 0xFF, msef >> 8)
         super().__init__(emcy_id >> FUNCTION_CODE_BITNUM, emcy_id & 0x7F, data)
+
+    @classmethod
+    def factory(cls, id, data):
+        eec, er, msef0, msef1 = struct.unpack("<HBBI", data)
+        return cls(id, eec, er, (msef1 << 8) + msef0)
 
 class PdoMessage(Message):
     def __init__(self, fc, node_id, data):
@@ -1167,17 +1172,20 @@ class Node:
         else:
             self._run_indicator = None
 
-        self.od = self._default_od
         self.nmt_state = NMT_STATE_INITIALISATION
+        self._first_boot = True
         self._heartbeat_consumer_timers = {}
         self._heartbeat_producer_timer = None
-        self._tpdo_triggers = [False, False, False, False]
-        self._sync_counter = 0
-        self._sync_timer = None
+        self._listener = None
         self._nmt_active_master = False
         self._nmt_active_master_timer = None
         self._nmt_flying_master_timer = None
         self._nmt_multiple_master_timer = None
+        self._sync_counter = 0
+        self._sync_timer = None
+        self._tpdo_triggers = [False, False, False, False]
+
+        self.reset()
 
     def __enter__(self):
         return self
@@ -1254,10 +1262,6 @@ class Node:
     def _send(self, msg: CAN.Message):
         return self.bus.send(msg)
 
-    def _send_bootup(self):
-        msg = BootupMessage(self.id)
-        return self._send(msg)
-
     def _send_emcy(self, eec, msef=0):
         emcy_id_obj = self.od.get(ODI_EMCY_ID)
         if emcy_id_obj is None:
@@ -1315,6 +1319,10 @@ class Node:
                 self._send(msg)
 
     @property
+    def is_listening(self):
+        return self._is_listening
+
+    @property
     def nmt_state(self):
         return self._nmt_state
 
@@ -1326,17 +1334,11 @@ class Node:
         except AttributeError:
             pass
 
-    def listen(self, blocking=False):
-        if blocking:
-            self._listen()
-        else:
-            self._listener = Thread(target=self._listen, daemon=True)
-            self._listener.start()
-
     def _listen(self):
+        self._is_listening = True
         while True:
             msg = self.recv()
-            self.process_msg(msg)
+            self._process_msg(msg)
 
     def _nmt_startup(self):
         nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
@@ -1366,6 +1368,8 @@ class Node:
         priority_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT).value
         device_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT).value
         flying_master_response_wait_time = priority * priority_time_slot + self.id * device_time_slot
+        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
+            self._nmt_flying_master_timer.cancel()
         self._nmt_flying_master_timer = Timer(flying_master_response_wait_time / 1000, self._nmt_flying_master_negotiation_timeout)
         self._nmt_flying_master_timer.start()
 
@@ -1373,13 +1377,18 @@ class Node:
         nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
         own_priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
         if priority <= own_priority:
-            self._nmt_active_master = False
-            nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value
-            self._nmt_multiple_master_timer = Timer(nmt_multiple_master_detect_time / 1000, self._send, [NmtForceFlyingMasterRequest()])
-            self._nmt_multiple_master_timer.start()
+            self._nmt_become_inactive_master()
         else:
             self._send(NmtForceFlyingMasterRequest())
-            Thread(target=self._nmt_flying_master_startup, daemon=True).start()
+            self._nmt_flying_master_startup()
+
+    def _nmt_active_master_timeout(self):
+        if self._first_boot:
+            self._first_boot = False
+            self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, 0))
+            self._nmt_flying_master_startup()
+        else:
+            self._nmt_flying_master_negotiation_request()
 
     def _nmt_flying_master_startup(self):
         flying_master_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
@@ -1387,7 +1396,9 @@ class Node:
         sleep(flying_master_delay / 1000)
         self._send(NmtActiveMasterRequest())
         active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value
-        self._nmt_active_master_timer = Timer(active_nmt_master_timeout_time / 1000, self._nmt_flying_master_negotiation_request)
+        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
+            self._nmt_active_master_timer.cancel()
+        self._nmt_active_master_timer = Timer(active_nmt_master_timeout_time / 1000, self._nmt_active_master_timeout)
         self._nmt_active_master_timer.start()
 
     def _nmt_become_active_master(self):
@@ -1398,15 +1409,32 @@ class Node:
             self.nmt_state = NMT_STATE_OPERATIONAL
         if nmt_startup & 0xA:
             self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
+        nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
+        nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value
+        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
+            self._nmt_multiple_master_timer.cancel()
+        self._nmt_multiple_master_timer = IntervalTimer(nmt_multiple_master_detect_time / 1000, self._send, [NmtForceFlyingMasterRequest()])
+        self._nmt_multiple_master_timer.start()
 
-    def boot(self):
-        self._send_bootup()
+    def _nmt_become_inactive_master(self):
+        self._nmt_active_master = False
+        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
+            self._nmt_multiple_master_timer.cancel()
+
+    def _boot(self):
+        self._send(BootupMessage(self.id))
         self.nmt_state = NMT_STATE_PREOPERATIONAL
+        if self._listener is None:
+            self._listener = Thread(target=self._listen, daemon=True)
+            self._listener.start()
+        else:
+            self._is_listening = True
         self._process_timers()
-        self.listen()
-        Thread(target=self._nmt_startup, daemon=True).start()
+        self._nmt_startup()
 
-    def process_msg(self, msg: Message):
+    def _process_msg(self, msg: Message):
+        if not self.is_listening:
+            return
         id = msg.arbitration_id
         data = msg.data
         rtr = msg.is_remote_frame
@@ -1456,6 +1484,7 @@ class Node:
                 compare_priority = False
                 if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
                     self._nmt_active_master_timer.cancel()
+                    self._first_boot = False
                     compare_priority = True
                 if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
                     self._nmt_flying_master_timer.cancel()
@@ -1483,9 +1512,8 @@ class Node:
                     if nmt_startup & 0x01: # Is NMT Master
                          self._send(NmtMasterResponse())
             elif command == NMT_FORCE_FLYING_MASTER:
-                if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
-                    self._nmt_multiple_master_timer.cancel()
-                Thread(target=self._nmt_flying_master_negotiation, daemon=True).start()
+                self._nmt_become_inactive_master()
+                self._nmt_flying_master_startup()
         elif fc == FUNCTION_CODE_SYNC and self.nmt_state == NMT_STATE_OPERATIONAL:
             sync_obj = self.od.get(ODI_SYNC)
             if sync_obj is not None:
@@ -1601,6 +1629,7 @@ class Node:
                 return Message.factory(self.bus.recv())
 
     def reset(self):
+        self._is_listening = False
         self.od = self._default_od
         self.reset_communication()
 
@@ -1609,7 +1638,7 @@ class Node:
         for odi, object in self._default_od.items():
             if odi >= 0x1000 or odi <= 0x1FFF:
                 self.od.update({odi: object})
-        self.boot()
+        self._boot()
 
     def trigger_tpdo(self, tpdo): # Event-driven TPDO
         tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
