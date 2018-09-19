@@ -184,6 +184,12 @@ SDO_ABORT_GENERAL = 0x08000000
 TPDO_COMM_PARAM_ID_VALID_BITNUM = 31
 TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
 
+def cancel_timer(timer: Timer):
+    if timer is not None and timer.is_alive():
+        timer.cancel()
+        return True
+    return False
+
 class ObjectDictionary(MutableMapping):
     def __init__(self, other=None, **kwargs):
         self._store = { # Defaults
@@ -1156,6 +1162,7 @@ class Node:
         if "err_indicator" in kwargs:
             if isinstance(kwargs["err_indicator"], ErrorIndicator):
                 self._err_indicator = kwargs["err_indicator"]
+                self._process_err_indicator()
                 self._err_indicator_timer = IntervalTimer(self._err_indicator.interval , self._process_err_indicator)
                 self._err_indicator_timer.start()
             else:
@@ -1194,6 +1201,16 @@ class Node:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._reset_timers()
 
+    def _reset_timers(self):
+        for i,t in self._heartbeat_consumer_timers.items():
+            cancel_timer(t)
+        self._heartbeat_consumer_timers = {}
+        cancel_timer(self._err_indicator_timer)
+        cancel_timer(self._heartbeat_producer_timer)
+        cancel_timer(self._sync_timer)
+        cancel_timer(self._nmt_active_master_timer)
+        cancel_timer(self._nmt_flying_master_timer)
+
     def _heartbeat_consumer_timeout(self, id):
         if self.nmt_state != NMT_STATE_STOPPED:
             self._send_emcy(EMCY_HEARTBEAT_BY_NODE + id)
@@ -1212,8 +1229,7 @@ class Node:
                 heartbeat_producer_time = 0
         else:
             heartbeat_producer_time = 0
-        if self._heartbeat_producer_timer is not None and heartbeat_producer_time != self._heartbeat_producer_timer.interval:
-            self._heartbeat_producer_timer.cancel()
+        cancel_timer(self._heartbeat_producer_timer)
         if heartbeat_producer_time != 0 and (self._heartbeat_producer_timer is None or not self._heartbeat_producer_timer.is_alive()):
             self._heartbeat_producer_timer = IntervalTimer(heartbeat_producer_time, self._send_heartbeat)
             self._heartbeat_producer_timer.start()
@@ -1235,8 +1251,7 @@ class Node:
                 sync_time = sync_time_value.value / 1000000
         else:
             sync_time = 0
-        if self._sync_timer is not None and (sync_time != self._sync_timer.interval or self.nmt_state == NMT_STATE_STOPPED):
-            self._sync_timer.cancel()
+        cancel_timer(self._sync_timer)
         if is_sync_producer and sync_time != 0 and self.nmt_state != NMT_STATE_STOPPED and (self._sync_timer is None or not self._sync_timer.is_alive()):
             self._sync_timer = IntervalTimer(sync_time, self._send_sync)
             self._sync_timer.start()
@@ -1244,19 +1259,6 @@ class Node:
     def _process_timers(self):
         self._process_heartbeat_producer()
         self._process_sync()
-
-    def _reset_timers(self):
-        for i,t in self._heartbeat_consumer_timers.items():
-            t.cancel()
-        self._heartbeat_consumer_timers = {}
-        if self._heartbeat_producer_timer is not None and self._heartbeat_producer_timer.is_alive():
-            self._heartbeat_producer_timer.cancel()
-        if self._sync_timer is not None and self._sync_timer.is_alive():
-            self._sync_timer.cancel()
-        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-            self._nmt_active_master_timer.cancel()
-        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
-            self._nmt_flying_master_timer.cancel()
 
     def _send(self, msg: CAN.Message):
         return self.bus.send(msg)
@@ -1367,8 +1369,7 @@ class Node:
         priority_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT).value
         device_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT).value
         flying_master_response_wait_time = priority * priority_time_slot + self.id * device_time_slot
-        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
-            self._nmt_flying_master_timer.cancel()
+        cancel_timer(self._nmt_flying_master_timer)
         self._nmt_flying_master_timer = Timer(flying_master_response_wait_time / 1000, self._nmt_flying_master_negotiation_timeout)
         self._nmt_flying_master_timer.start()
 
@@ -1397,8 +1398,7 @@ class Node:
         sleep(flying_master_delay / 1000)
         self._send(NmtActiveMasterRequest())
         active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value
-        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-            self._nmt_active_master_timer.cancel()
+        cancel_timer(self._nmt_active_master_timer)
         self._nmt_active_master_timer = Timer(active_nmt_master_timeout_time / 1000, self._nmt_active_master_timeout)
         self._nmt_active_master_timer.start()
 
@@ -1412,15 +1412,13 @@ class Node:
             self._send(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
         nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
         nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value
-        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
-            self._nmt_multiple_master_timer.cancel()
+        cancel_timer(self._nmt_multiple_master_timer)
         self._nmt_multiple_master_timer = IntervalTimer(nmt_multiple_master_detect_time / 1000, self._send, [NmtForceFlyingMasterRequest()])
         self._nmt_multiple_master_timer.start()
 
     def _nmt_become_inactive_master(self):
         self._nmt_active_master = False
-        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
-            self._nmt_multiple_master_timer.cancel()
+        cancel_timer(self._nmt_multiple_master_timer)
         if self._nmt_active_master_id not in self._heartbeat_consumer_timers:
             heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
             if heartbeat_producer_object is not None:
@@ -1495,15 +1493,13 @@ class Node:
                     if nmt_startup & 0x01: # Is NMT Master
                         compare_priority = False
                         self._nmt_active_master_id = data[1]
-                        if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-                            self._nmt_active_master_timer.cancel()
+                        cancel_timer(self._nmt_active_master_timer)
+                        if cancel_timer(self._nmt_active_master_timer):
                             self._first_boot = False
                             compare_priority = True
-                        if self._nmt_flying_master_timer is not None and self._nmt_flying_master_timer.is_alive():
-                            self._nmt_flying_master_timer.cancel()
+                        if cancel_timer(self._nmt_flying_master_timer):
                             compare_priority = True
-                        if self._nmt_multiple_master_timer is not None and self._nmt_multiple_master_timer.is_alive():
-                            self._nmt_multiple_master_timer.cancel()
+                        if cancel_timer(self._nmt_multiple_master_timer):
                             compare_priority = True
                         if compare_priority:
                             self._nmt_compare_flying_master_priority(data[0])
@@ -1616,9 +1612,9 @@ class Node:
         elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
             producer_id = id & 0x7F
             if producer_id in self._heartbeat_consumer_timers:
-                self._heartbeat_consumer_timers.get(producer_id).cancel()
-            elif self.is_nmt_master_capable and producer_id == self._nmt_active_master_id and self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-                self._nmt_active_master_timer.cancel()
+                cancel_timer(self._heartbeat_consumer_timers.get(producer_id))
+            elif self.is_nmt_master_capable and producer_id == self._nmt_active_master_id:
+                cancel_timer(self._nmt_active_master_timer)
                 heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
                 if heartbeat_producer_object is not None:
                     heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
@@ -1641,8 +1637,7 @@ class Node:
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
                 if self.is_nmt_master_capable and producer_id == self._nmt_active_master_id:
-                    if self._nmt_active_master_timer is not None and self._nmt_active_master_timer.is_alive():
-                        self._nmt_active_master_timer.cancel()
+                    cancel_timer(self._nmt_active_master_timer)
                     self._nmt_active_master_timer = Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
                     self._nmt_active_master_timer.start()
 
@@ -1672,6 +1667,9 @@ class Node:
 
     def reset_communication(self):
         self._reset_timers()
+        if self._err_indicator is not None:
+            self._err_indicator_timer = IntervalTimer(self._err_indicator.interval, self._process_err_indicator)
+            self._err_indicator_timer.start()
         for odi, object in self._default_od.items():
             if odi >= 0x1000 or odi <= 0x1FFF:
                 self.od.update({odi: object})
