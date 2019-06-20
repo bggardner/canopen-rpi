@@ -80,6 +80,8 @@ Add CAN Support
     
     *Note: The `oscillator` and `interrupt` parameters may be different for your application.*
 
+2. Reboot to enable the MCP2515 drivers.
+
 3. Setup CAN interfaces
     * Manual
 
