@@ -101,7 +101,7 @@ Add CAN Support
 4. (Optional) Install `can-utils` for debugging
 
     ```
-    sudo apt-get install can-utils
+    sudo apt install can-utils
     ```
 
 Library Usage
