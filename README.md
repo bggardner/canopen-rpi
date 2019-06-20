@@ -67,8 +67,8 @@ Add CAN Support
 1. If necessary, enable writable boot partition: `sudo mount -o remount,rw /dev/mmcblk0p1 /boot`
 
 1. Run `sudo raspi-config`
-    * Advanced Options
-        * A6 SPI: Enable and load it by default at boot
+    * Interfacing Options
+        * SPI: Enable/Disable automatic loading (Yes)
 
 2. Configure SPI Module: Change `/boot/config.txt` to:
 
