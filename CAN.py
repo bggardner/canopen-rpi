@@ -80,7 +80,11 @@ class Bus(socket.socket):
         self.bind((interface,)) # Throws OSError if interface doesn't exist
 
     def get_state(self):
-        interface, _ = self.getsockname()
+        addr = self.getsockname() # Data type check required because of https://bugs.python.org/issue37405
+        if isinstance(addr, tuple):
+            interface, *_ = self.getsockname()
+        else:
+            interface = self.getsockname()
         try:
             details = check_output(["ip", "-d", "link", "show", interface])
         except CalledProcessError: # ip returned non-zero

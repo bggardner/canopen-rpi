@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+
+import signal
+
 import CAN
 import CANopen
 
@@ -86,5 +89,4 @@ canopen_od = CANopen.ObjectDictionary({
 
 node = CANopen.Node(can_bus, node_id, canopen_od)
 
-while True:
-    pass # Run forever
+signal.pause() # Run forever

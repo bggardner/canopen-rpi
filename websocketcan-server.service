@@ -1,11 +1,11 @@
 [Unit]
-Description=CANopen Master Daemon
+Description=WebSocket-to-CAN Daemon
 After=can_if.service
 Requires=can_if.service
 
 [Service]
 Type=idle
-ExecStart=/home/pi/canopen-master.py
+ExecStart=/home/pi/websocketcan-server.py
 
 [Install]
 WantedBy=multi-user.target

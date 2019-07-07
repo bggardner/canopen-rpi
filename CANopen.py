@@ -162,7 +162,7 @@ ODSI_SELF_STARTING_NODES_TIMING_PARAMS_DELAY = 0x02
 ODSI_SELF_STARTING_NODES_TIMING_PARAMS_TIME_SLOT = 0x03
 
 # SDO
-SDO_N_BITNUM = 3
+SDO_N_BITNUM = 2
 SDO_N_LENGTH = 2
 SDO_E_BITNUM = 1
 SDO_S_BITNUM = 0
@@ -184,11 +184,13 @@ SDO_ABORT_GENERAL = 0x08000000
 TPDO_COMM_PARAM_ID_VALID_BITNUM = 31
 TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
 
+
 def cancel_timer(timer: Timer):
     if timer is not None and timer.is_alive():
         timer.cancel()
         return True
     return False
+
 
 class ObjectDictionary(MutableMapping):
     def __init__(self, other=None, **kwargs):
@@ -595,6 +597,7 @@ class ObjectDictionary(MutableMapping):
             od.update({i: o})
         return ObjectDictionary(od)
 
+
 @unique
 class ObjectType(IntEnum):
     NULL = OD_OBJECT_TYPE_NULL
@@ -605,6 +608,7 @@ class ObjectType(IntEnum):
     ARRAY = OD_OBJECT_TYPE_ARRAY
     RECORD = OD_OBJECT_TYPE_RECORD
 
+
 @unique
 class AccessType(Enum):
     RO = "ro"
@@ -614,12 +618,14 @@ class AccessType(Enum):
     RWW = "rww"
     CONST = "const"
 
+
 class DataType(int):
     def __new__(cls, value):
         instance = int.__new__(cls, value)
         if not 0x0 <= instance <= 0x9F:
             raise ValueError("Invalid data type: 0x{:X}".format(value))
         return instance
+
 
 class ProtoObject(MutableMapping):
     def __init__(self, **kwargs):
@@ -771,6 +777,7 @@ class SubObject(ProtoObject):
             pdo_mapping=po.pdo_mapping
         )
 
+
 class Object(ProtoObject):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -839,25 +846,32 @@ class Object(ProtoObject):
             subs=subs
         )
 
+
 class IntervalTimer(Thread):
+    """Call a function every specified number of seconds:
+
+            t = IntervalTimer(30.0, f, args=None, kwargs=None)
+            t.start()
+            t.cancel()    # stop the timer's action if it's still running
+    """
+
     def __init__(self, interval, function, args=None, kwargs=None):
-        if args is None:
-            args = ()
-        if kwargs is None:
-            kwargs = {}
         super().__init__(args=args, kwargs=kwargs)
-        self._stopped = Event()
-        self._function = function
         self.interval = interval
+        self.function = function
+        self.args = args if args is not None else []
+        self.kwargs = kwargs if kwargs is not None else {}
+        self.finished = Event()
 
     def cancel(self):
-        self._stopped.set()
-        while self.is_alive():
-            pass
+        self.finished.set()
 
     def run(self):
-        while not self._stopped.wait(self.interval):
-            self._function(*self._args, **self._kwargs)
+        while not self.finished.wait(self.interval):
+            if self.finished.is_set():
+                break
+            self.function(*self.args, **self.kwargs)
+
 
 class Indicator:
     OFF = {'DutyCycle': 0, 'Frequency': 2.5}
@@ -878,6 +892,7 @@ class Indicator:
         self._pwm.ChangeDutyCycle(state.get('DutyCycle'))
         self._pwm.ChangeFrequency(state.get('Frequency'))
 
+
 class ErrorIndicator(Indicator):
     def __init__(self, channel, init_state=CAN.Bus.STATE_BUS_OFF, interval=1):
         init_state = self._get_state(init_state)
@@ -896,6 +911,7 @@ class ErrorIndicator(Indicator):
     def set_state(self, err_state):
         indicator_state = self._get_state(err_state)
         super().set_state(indicator_state)
+
 
 class RunIndicator(Indicator):
     def __init__(self, channel, init_state=NMT_STATE_INITIALISATION):
@@ -916,6 +932,7 @@ class RunIndicator(Indicator):
     def set_state(self, nmt_state):
         indicator_state = self._get_state(nmt_state)
         super().set_state(indicator_state)
+
 
 class Message(CAN.Message):
     def __init__(self, fc, node_id, data=[]):
@@ -949,6 +966,7 @@ class Message(CAN.Message):
             return NmtErrorControlMessage.factory(node_id, msg.data)
         raise NotImplementedError
 
+
 class NmtMessage(Message):
     def __init__(self, command, data):
         super().__init__(FUNCTION_CODE_NMT, command, data)
@@ -973,6 +991,7 @@ class NmtMessage(Message):
             return NmtForceFlyingMasterRequest()
         raise NotImplementedError
 
+
 class NmtNodeControlMessage(NmtMessage):
     def __init__(self, cmd, target_id):
         data = struct.pack("<BB", cmd, target_id)
@@ -983,9 +1002,11 @@ class NmtNodeControlMessage(NmtMessage):
         cmd, target_id = struct.unpack("<BB", data)
         return cls(cmd, target_id)
 
+
 class NmtGfcMessage(NmtMessage):
     def __init__(self):
         super().__init__(NMT_GFC, bytes())
+
 
 class NmtFlyingMasterResponse(NmtMessage):
     def __init__(self, priority, node_id):
@@ -996,29 +1017,36 @@ class NmtFlyingMasterResponse(NmtMessage):
         priority, node_id = struct.unpack("<BB", data)
         return cls(priority, node_id)
 
+
 class NmtFlyingMasterRequest(NmtMessage):
     def __init__(self):
         super().__init__(NMT_FLYING_MASTER_REQUEST, bytes())
+
 
 class NmtActiveMasterRequest(NmtMessage):
     def __init__(self):
         super().__init__(NMT_ACTIVE_MASTER_REQUEST, bytes())
 
+
 class NmtMasterResponse(NmtMessage):
     def __init__(self):
         super().__init__(NMT_MASTER_RESPONSE, bytes())
+
 
 class NmtMasterRequest(NmtMessage):
     def __init__(self):
         super().__init__(NMT_MASTER_REQUEST, bytes())
 
+
 class NmtForceFlyingMasterRequest(NmtMessage):
     def __init__(self):
         super().__init__(NMT_FORCE_FLYING_MASTER, bytes())
 
+
 class SyncMessage(Message):
     def __init__(self):
         super().__init__(FUNCTION_CODE_SYNC, 0x00)
+
 
 class EmcyMessage(Message):
     def __init__(self, emcy_id, eec, er, msef=0):
@@ -1030,9 +1058,11 @@ class EmcyMessage(Message):
         eec, er, msef0, msef1 = struct.unpack("<HBBI", data)
         return cls(id, eec, er, (msef1 << 8) + msef0)
 
+
 class PdoMessage(Message):
     def __init__(self, fc, node_id, data):
         super().__init__(fc, node_id, data)
+
 
 class SdoMessage(Message):
     def __init__(self, fc, node_id, cs, n, e, s, index, subindex, data):
@@ -1067,6 +1097,7 @@ class SdoMessage(Message):
     def sdo_data(self):
         return struct.unpack("<I", self.data[4:])[0]
 
+
 class SdoRequest(SdoMessage):
     def __init__(self, node_id, cs, n, e, s, index, subindex, data):
         super().__init__(FUNCTION_CODE_SDO_RX, node_id, cs, n, e, s, index, subindex, data)
@@ -1083,6 +1114,7 @@ class SdoRequest(SdoMessage):
         if cs == SDO_CCS_UPLOAD:
             return SdoUploadRequest(node_id, index, subindex)
         raise Exception
+
 
 class SdoResponse(SdoMessage):
     def __init__(self, node_id, cs, n, e, s, index, subindex, data):
@@ -1103,25 +1135,31 @@ class SdoResponse(SdoMessage):
             return SdoUploadResponse(node_id, n, e, s, index, subindex, data)
         raise Exception
 
+
 class SdoAbortResponse(SdoResponse):
     def __init__(self, node_id, index, subindex, abort_code):
         super().__init__(node_id, SDO_CS_ABORT, 0, 0, 0, index, subindex, abort_code)
+
 
 class SdoDownloadRequest(SdoRequest):
     def __init__(self, node_id, n, e, s, index, subindex, data):
         super().__init__(node_id, SDO_CCS_DOWNLOAD, n, e, s, index, subindex, data)
 
+
 class SdoDownloadResponse(SdoResponse):
     def __init__(self, node_id, index, subindex):
         super().__init__(node_id, SDO_SCS_DOWNLOAD, 0, 0, 0, index, subindex, 0)
+
 
 class SdoUploadRequest(SdoRequest):
     def __init__(self, node_id, index, subindex):
         super().__init__(node_id, SDO_CCS_UPLOAD, 0, 0, 0, index, subindex, 0)
 
+
 class SdoUploadResponse(SdoResponse):
     def __init__(self, node_id, n, e, s, index, subindex, data):
         super().__init__(node_id, SDO_SCS_UPLOAD, n, e, s, index, subindex, data)
+
 
 class NmtErrorControlMessage(Message):
     def __init__(self, node_id, data):
@@ -1134,13 +1172,16 @@ class NmtErrorControlMessage(Message):
         else:
             return HeartbeatMessage(node_id, data[0])
 
+
 class BootupMessage(NmtErrorControlMessage):
     def __init__(self, node_id):
         super().__init__(node_id, bytearray([NMT_STATE_INITIALISATION]))
 
+
 class HeartbeatMessage(NmtErrorControlMessage):
     def __init__(self, node_id, nmt_state):
         super().__init__(node_id, bytearray([nmt_state]))
+
 
 class SdoAbort(Exception):
     def __init__(self, odi, odsi, code):
@@ -1148,8 +1189,10 @@ class SdoAbort(Exception):
         self.odsi = odsi
         self.code = code
 
+
 class SdoTimeout(Exception):
     pass
+
 
 class Node:
     def __init__(self, bus: CAN.Bus, id, od: ObjectDictionary, *args, **kwargs):
@@ -1210,6 +1253,7 @@ class Node:
         cancel_timer(self._sync_timer)
         cancel_timer(self._nmt_active_master_timer)
         cancel_timer(self._nmt_flying_master_timer)
+        cancel_timer(self._nmt_multiple_master_timer)
 
     def _heartbeat_consumer_timeout(self, id):
         if self.nmt_state != NMT_STATE_STOPPED:

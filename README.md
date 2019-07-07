@@ -67,8 +67,8 @@ Add CAN Support
 1. If necessary, enable writable boot partition: `sudo mount -o remount,rw /dev/mmcblk0p1 /boot`
 
 1. Run `sudo raspi-config`
-    * Advanced Options
-        * A6 SPI: Enable and load it by default at boot
+    * Interfacing Options
+        * SPI: Enable/Disable automatic loading (Yes)
 
 2. Configure SPI Module: Change `/boot/config.txt` to:
 
@@ -79,6 +79,8 @@ Add CAN Support
     *Note: It appears the order of the mcp2515-can\* overlay determines which SPI CE is used (first listing gets spi0.1/CE1, second listing get spi0.0/CE0), even though the documentation says otherwise.  See https://github.com/raspberrypi/linux/issues/1490 for more info.*
     
     *Note: The `oscillator` and `interrupt` parameters may be different for your application.*
+
+2. Reboot to enable the MCP2515 drivers.
 
 3. Setup CAN interfaces
     * Manual
@@ -99,7 +101,7 @@ Add CAN Support
 4. (Optional) Install `can-utils` for debugging
 
     ```
-    sudo apt-get install can-utils
+    sudo apt install can-utils
     ```
 
 Library Usage
