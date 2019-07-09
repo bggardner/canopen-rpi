@@ -1274,7 +1274,7 @@ class Node:
         else:
             heartbeat_producer_time = 0
         cancel_timer(self._heartbeat_producer_timer)
-        if heartbeat_producer_time != 0 and (self._heartbeat_producer_timer is None or not self._heartbeat_producer_timer.is_alive()):
+        if heartbeat_producer_time != 0:
             self._heartbeat_producer_timer = IntervalTimer(heartbeat_producer_time, self._send_heartbeat)
             self._heartbeat_producer_timer.start()
 
@@ -1296,7 +1296,7 @@ class Node:
         else:
             sync_time = 0
         cancel_timer(self._sync_timer)
-        if is_sync_producer and sync_time != 0 and self.nmt_state != NMT_STATE_STOPPED and (self._sync_timer is None or not self._sync_timer.is_alive()):
+        if is_sync_producer and sync_time != 0 and self.nmt_state != NMT_STATE_STOPPED:
             self._sync_timer = IntervalTimer(sync_time, self._send_sync)
             self._sync_timer.start()
 
