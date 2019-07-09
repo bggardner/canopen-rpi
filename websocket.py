@@ -58,17 +58,21 @@ class Frame: # Called a Frame since a "message" is comprised of (or fragmented i
         header += int(self.rsv3) << 12
         header += self.opcode.value << 8
         header += int(self.masked) << 7
-        header += len(self.payload)
-        b = struct.pack(">H", header)
-        if self.masked:
-            b += struct.pack(">I", randrange(0xFFFFFFFF)) # Masking key
         payload_len = len(self.payload)
         if payload_len > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("Payload is too long, use fragmentation")
         elif payload_len > 0xFFFF:
-            b += struct.pack(">Q", payload_len)
+            payload_len = 127
         elif payload_len > 125:
-            b += struct.pack(">H", payload_len)
+            payload_len = 126
+        header += payload_len
+        b = struct.pack(">H", header)
+        if payload_len == 126:
+            b += struct.pack(">H", len(self.payload))
+        elif payload_len == 127:
+            b += struct.pack(">Q", len(self.payload))
+        if self.masked:
+            b += struct.pack(">I", randrange(0xFFFFFFFF)) # Masking key
         b += bytes(self.payload)
         return b
 
