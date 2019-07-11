@@ -1616,22 +1616,22 @@ class Node:
                                         e = (data[0] >> SDO_E_BITNUM) & 1
                                         if e == 1 and s == 1:
                                             n = (data[0] >> SDO_N_BITNUM) & (2 ** SDO_N_LENGTH - 1)
-                                            subobj.value = int.from_bytes(data[4:8-n], byteorder='little')
-                                            obj.update({odsi: subobj})
-                                            self.od.update({odi: obj})
                                         elif e == 1 and s == 0:
+                                            n = 0 # Unspecified number of bytes, default to all
                                             if ODSI_STRUCTURE in obj:
-                                                data_type_index = obj.get(ODSI_STRUCTURE) >> OD_STRUCTURE_DATA_TYPE_BITNUM
+                                                data_type_index = obj.get(ODSI_STRUCTURE).value >> OD_STRUCTURE_DATA_TYPE_BITNUM
                                                 if data_type_index in self.od:
                                                     data_type_object = self.od.get(data_type_index)
                                                     if ODSI_VALUE in data_type_object:
                                                         n = 4 - max(1, data_type_object.get(ODSI_VALUE) // 8)
-                                                        obj.update({odsi: int.from_bytes(data[4:8-n], byteorder='little')})
-                                                        self.od.update({odi: obj})
                                         elif e == 0 and s == 1:
                                             raise NotImplementedError # TODO: Stadard SDO
                                         else:
                                             raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL) # e == 0, s == 0 is reserved
+                                        subobj.value = int.from_bytes(data[4:8-n], byteorder='little')
+                                        obj.update({odsi: subobj})
+                                        self.od.update({odi: obj})
+                                        self._process_timers() # Update timers since OD was modified
                                         sdo_data = 0
                                     else:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_CS)
@@ -1652,7 +1652,6 @@ class Node:
                             raise ValueError("SDO Server SCID not specified")
                         msg = CAN.Message(sdo_server_scid.value, data)
                         self._send(msg)
-                        self._process_timers()
         elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
             producer_id = id & 0x7F
             if producer_id in self._heartbeat_consumer_timers:
