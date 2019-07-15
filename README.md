@@ -24,6 +24,7 @@ Example protocol adaptors are provided: Note that these are very crude and do no
 * CAN-to-HTTP (`canhttp.py`, see below for API)
 * CAN-to-UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure)
 * CANopen-to-HTTP (`canopen-http.py`, implementation of CiA 309-5)
+* CAN-to-WebSocket (`websocketcan-server.py`, uses SocketCAN message structure; `websocketcan.js` can be used to decode in client)
 
 Raspberry Pi Setup
 ==================
