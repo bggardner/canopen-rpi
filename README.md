@@ -107,7 +107,13 @@ Add CAN Support
     ```
 
 Library Usage
--------------
+=============
+
+Installation
+------------
+1. `git clone https://github.com/bggardner/canopen-rpi.git`
+1. `cd canopen-rpi`
+1. `pip3 install -e .`
 
 The simplest node is presented in the [canopen-node-sdo.py](/examples/canopen-node-sdo.py) file.
 
