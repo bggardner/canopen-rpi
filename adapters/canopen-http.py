@@ -1,6 +1,4 @@
 #!/usr/bin/python3
-import CAN
-import CANopen
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
@@ -14,6 +12,9 @@ import sys
 from time import sleep, time
 import traceback
 from urllib.parse import parse_qsl, urlparse
+
+import socketcan
+import socketcanopen
 
 # Server constants
 CAN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
@@ -92,7 +93,7 @@ def parse_net(net):
         net = default_net
     else:
         net = CAN_INTERFACES[int(net) - 1]
-    return CAN.Bus(net)
+    return socketcan.Bus(net)
 
 def parse_command(command):
     if command[0:2] == 'r/' or command[0:5] == 'read/':
@@ -139,7 +140,7 @@ def parse_int(value, max=sys.maxsize):
         raise ValueError("invalid integer value: " + str(value))
     return int_value
 
-def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest, timeout) -> CANopen.SdoResponse:
+def exec_sdo(bus: socketcan.Bus, request: socketcanopen.SdoRequest, timeout) -> socketcanopen.SdoResponse:
     bus.send(request)
     timeout_time = time() + timeout
     dtimeout = timeout
@@ -147,21 +148,21 @@ def exec_sdo(bus: CAN.Bus, request: CANopen.SdoRequest, timeout) -> CANopen.SdoR
         rlist, _, _ = select([bus], [], [], dtimeout)
         if len(rlist) > 0:
             bus = rlist[0]
-            response = CANopen.Message.factory(bus.recv())
-            if isinstance(response, CANopen.SdoResponse) and response.node_id == request.node_id and response.index == request.index and response.subindex == request.subindex:
-                if isinstance(response, CANopen.SdoAbortResponse):
-                    raise CANopen.SdoAbort(response.index, response.subindex, response.sdo_data)
-                if isinstance(request, CANopen.SdoUploadRequest) and isinstance(response, CANopen.SdoUploadResponse):
+            response = socketcanopen.Message.factory(bus.recv())
+            if isinstance(response, socketcanopen.SdoResponse) and response.node_id == request.node_id and response.index == request.index and response.subindex == request.subindex:
+                if isinstance(response, socketcanopen.SdoAbortResponse):
+                    raise socketcanopen.SdoAbort(response.index, response.subindex, response.sdo_data)
+                if isinstance(request, socketcanopen.SdoUploadRequest) and isinstance(response, socketcanopen.SdoUploadResponse):
                     return response
-                if isinstance(request, CANopen.SdoDownloadRequest) and isinstance(response, CANopen.SdoDownloadResponse):
+                if isinstance(request, socketcanopen.SdoDownloadRequest) and isinstance(response, socketcanopen.SdoDownloadResponse):
                     return response
-                # Unsupported CANopen.SdoResponse, ignore and keep listening
+                # Unsupported socketcanopen.SdoResponse, ignore and keep listening
             dtimeout = timeout_time - time()
         else:
-            raise CANopen.SdoTimeout # Timeout from select
-    raise CANopen.SdoTimeout
+            raise socketcanopen.SdoTimeout # Timeout from select
+    raise socketcanopen.SdoTimeout
 
-def read_pdo(bus: CAN.Bus, nr, timeout):
+def read_pdo(bus: socketcan.Bus, nr, timeout):
     global rpdos
     rpdo = rpdos.get(nr)
     if rpdo is None:
@@ -226,15 +227,15 @@ class RequestHandler(BaseHTTPRequestHandler):
 
                 if command in ['start', 'stop', 'preop', 'reset/node', 'reset/comm']:
                     if command == 'start':
-                        cs = CANopen.NMT_NODE_CONTROL_START
+                        cs = socketcanopen.NMT_NODE_CONTROL_START
                     elif command == 'stop':
-                        cs = CANopen.NMT_NODE_CONTROL_STOP
+                        cs = socketcanopen.NMT_NODE_CONTROL_STOP
                     elif command == 'preop' or command == 'preoperational':
-                        cs = CANopen.NMT_NODE_CONTROL_PREOPERATIONAL
+                        cs = socketcanopen.NMT_NODE_CONTROL_PREOPERATIONAL
                     elif command == 'reset/node':
-                        cs = CANopen.NMT_NODE_CONTROL_RESET_NODE
+                        cs = socketcanopen.NMT_NODE_CONTROL_RESET_NODE
                     elif command == 'reset/comm' or command == 'reset/communication':
-                        cs = CANopen.NMT_NODE_CONTROL_RESET_COMMUNICATION
+                        cs = socketcanopen.NMT_NODE_CONTROL_RESET_COMMUNICATION
                     else:
                         raise BadRequest("Invalid NMT Node Control command-specifier")
 
@@ -248,7 +249,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         node_id = node
 
                     if node_id is not None:
-                        msg = CANopen.NmtNodeControlMessage(cs, node_id)
+                        msg = socketcanopen.NmtNodeControlMessage(cs, node_id)
                         bus.send(msg)
                     command_response["response"] = "OK"
 
@@ -351,7 +352,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 if index == 'all':
                                     raise NotImplementedError # "Resource", should use EDS
 
-                                req = CANopen.SdoUploadRequest(node_id, index, subindex)
+                                req = socketcanopen.SdoUploadRequest(node_id, index, subindex)
                                 res = exec_sdo(bus, req, sdo_timeout)
                                 command_response["data"] = "0x{:08X}".format(res.sdo_data)
                                 command_response["length"] = "u32" # Lookup data type in EDS?
@@ -384,16 +385,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 n = 0
                                 e = 1
                                 s = 1
-                                req = CANopen.SdoDownloadRequest(node_id, n, e, s, index, subindex, value)
+                                req = socketcanopen.SdoDownloadRequest(node_id, n, e, s, index, subindex, value)
                                 res = exec_sdo(bus, req, sdo_timeout)
                                 command_response["response"] = "OK"
 
                 else:
                     raise BadRequest("invalid command: " + command)
 
-            except CANopen.SdoAbort as e:
+            except socketcanopen.SdoAbort as e:
                 command_response["response"] = "ERROR:0x" + "{:08X}".format(e.code)
-            except CANopen.SdoTimeout:
+            except socketcanopen.SdoTimeout:
                 command_response["response"] = "ERROR:103"
 
             self.send_response(200)

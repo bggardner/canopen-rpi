@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-import CAN
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from os import path
@@ -11,14 +10,19 @@ from time import sleep
 import traceback
 from urllib.parse import parse_qs, urlparse
 
+import socketcan
+
+
 CAN_SEND_INTERFACE = "vcan0" # When no bus/interface is specified
 CAN_LISTEN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
 HTTP_SERVER_IP_ADDRESS = "" # Empty string for any address
 HTTP_SERVER_PORT = 8000
 WWW_DIR = path.dirname(path.realpath(__file__))
 
+
 def sigterm_handler(signum, frame):
     sys.exit()
+
 
 def parse_request(request):
     interface = request.get('bus')
@@ -27,7 +31,7 @@ def parse_request(request):
     else:
         interface = interface[0]
     try:
-        bus = CAN.Bus(interface)
+        bus = socketcan.Bus(interface)
     except OSError:
         raise BadRequest("bus '" + interface + "' does not exist")
     id = request.get('id')
@@ -45,15 +49,18 @@ def parse_request(request):
       if data[0] == '':
         data = []
     data = list(map(int, data))
-    msg = CAN.Message(id, data)
+    msg = socketcan.Message(id, data)
     return (bus, msg)
+
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     pass
 
+
 class BadRequest(BaseException):
     def __init__(self, arg):
         self.args = arg
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -79,7 +86,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
                 busses = []
                 for interface in CAN_LISTEN_INTERFACES:
-                    bus = CAN.Bus(interface)
+                    bus = socketcan.Bus(interface)
                     busses.append(bus)
 
                 while True:
@@ -91,7 +98,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                             data = msg.data
                             data = ",".join(map(str, data))
                             self.wfile.write(bytes('data: {"bus":"' + bus.name + '","id":' + str(id) + ',"data":[' + data + '],"ts":"' + datetime.fromtimestamp(msg.timestamp).isoformat() + '"}' + "\n\n", 'utf8'))
-                    except CAN.BusDown:
+                    except socketcan.BusDown:
                         self.wfile.write(bytes('event: error' + "\n" + 'data: ' + bus.name + ' is down.' + "\n\n", 'utf-8'))
                         sleep(1)
                         continue
@@ -150,6 +157,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         return # Suppress logging
+
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 srvr = ThreadedHTTPServer((HTTP_SERVER_IP_ADDRESS, HTTP_SERVER_PORT), RequestHandler)

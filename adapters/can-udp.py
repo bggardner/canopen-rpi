@@ -1,11 +1,12 @@
 #!/usr/bin/python3
-import CAN
 from datetime import datetime
 from select import select
 import signal
 import socket
 import sys
 from time import sleep
+
+import socketcan
 
 CAN_LISTEN_INTERFACES = ["vcan0", "vcan1"] # Must be a list
 CAN_SEND_INTERFACE = "vcan0"
@@ -21,7 +22,7 @@ signal.signal(signal.SIGTERM, sigterm_handler)
 
 sockets = []
 for interface in CAN_LISTEN_INTERFACES:
-    can_socket = CAN.Bus(interface)
+    can_socket = socketcan.Bus(interface)
     sockets.append(can_socket)
 for s in sockets:
     if s.getsockname()[0] == CAN_SEND_INTERFACE:
@@ -35,15 +36,15 @@ while True:
         rlist, _, _ = select(sockets, [], [])
         for s in rlist:
             socket_type = s.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
-            if isinstance(s, CAN.Bus):
+            if isinstance(s, socketcan.Bus):
                 msg = s.recv()
                 for b in bytes(msg):
                     print(hex(b))
                 print("-")
                 udp_socket.sendto(bytes(msg), (UDP_SEND_IP, UDP_SEND_PORT))
             if socket_type == socket.SOCK_DGRAM:
-                msg = s.recv(CAN.Message.SIZE)
-                can_socket.send(CAN.Message.from_bytes(msg))
-    except CAN.BusDown:
+                msg = s.recv(socketcan.Message.SIZE)
+                can_socket.send(socketcan.Message.from_bytes(msg))
+    except socketcan.BusDown:
         sleep(1)
 

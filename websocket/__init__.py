@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 from base64 import b64encode
 from enum import Enum
 from hashlib import sha1
@@ -7,7 +6,9 @@ from random import randrange
 from select import select
 import struct
 
+
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
 
 class Frame: # Called a Frame since a "message" is comprised of (or fragmented into) Frames
 
@@ -110,6 +111,7 @@ class Frame: # Called a Frame since a "message" is comprised of (or fragmented i
         payload_len = b[1] & 0x7F
         dummy_payload = [0] * payload_len
         return cls(final, opcode, masked, dummy_payload, rsv1=rsv1, rsv2=rsv2, rsv3=rsv3)
+
 
 class WebSocket:
     def __init__(self, rfile, wfile, is_server=False):
@@ -230,6 +232,7 @@ class WebSocket:
 
     def send_frame(self, frame: Frame):
         self.wfile.write(bytes(frame))
+
 
 class HTTPRequestHandler(BaseHTTPRequestHandler):
     class BadRequest(Exception):

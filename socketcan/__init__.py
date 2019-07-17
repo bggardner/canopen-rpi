@@ -1,5 +1,3 @@
-#!/usr/bin/python3
-
 import errno
 from fcntl import ioctl
 import re
