@@ -4,25 +4,26 @@ About
 Modules
 -------
 
-This repository contains two Python modules used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `CAN.py`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `CAN.py` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `CANopen.py`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `CAN.Bus`, a node ID (integer, 1 to 127), and an `CANopen.ObjectDictionary`.
+This repository contains Python modules used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `socketcan`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `socketcan` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `socketcanopen`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `socketcan.Bus`, a node ID (integer, 1 to 127), and an `socketcanopen.ObjectDictionary`.
 
 Node Applications
 -------------------------
 
 Example node applications are provided:
 * `canopen-node-sdo.py` is the simplest implentation of a node that supports SDO communication.
+* `canopen-node-sdo-normal.py` has object dictionary entries with values greater than 4 bytes to demonstrate normal (non-expedited) SDO.
 * `canopen-node-eds.py` imports the CANopen object dictionary from an EDS file (`node.eds`).
 * `canopen-node-pdo.py` adds synchronous PDO support.
 * `canopen-master.py` is a complex example of a CANopen Master that involves using GPIOs and how to interact with changes to the object dictionary.
 
-`systemd` `.service` files and instructions for starting the node applications at boot are also provided.
+`systemd` `.service` unit files and instructions for starting the node applications at boot are also provided.
 
 Protocol Adaptors
 -----------------
 
 Example protocol adaptors are provided: Note that these are very crude and do not provide buffering.
-* CAN-to-HTTP (`canhttp.py`, see below for API)
-* CAN-to-UDP (`canudp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure)
+* CAN-to-HTTP (`can-http.py`, see below for API)
+* CAN-to-UDP (`can-udp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure)
 * CANopen-to-HTTP (`canopen-http.py`, implementation of CiA 309-5)
 * CAN-to-WebSocket (`websocketcan-server.py`, uses SocketCAN message structure; `websocketcan.js` can be used to decode in client)
 
@@ -108,20 +109,20 @@ Add CAN Support
 Library Usage
 -------------
 
-The simplest node is presented in the [canopen-node-sdo.py](/canopen-node-sdo.py) file.
+The simplest node is presented in the [canopen-node-sdo.py](/examples/canopen-node-sdo.py) file.
 
-Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: CANopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: CAN.Message)` and `Node.listen()` are not. 
+Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: socketcanopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: socketcan.Message)` and `Node.listen()` are not. 
 
 Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
 ---------------------------------------------------------------------
 
 8. Setup CANopen Master
-    1. Copy [canopen-master.py](/canopen-master.py) to `/home/pi/`
-    2. Copy [canopen-master.service](/canopen-master.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
+    1. Copy [canopen-master.py](/examples/canopen-master.py) to `/home/pi/`
+    2. Copy [canopen-master.service](/unit-files/canopen-master.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
 8. Setup CAN-to-HTTP Adapter
-    1. Copy [canhttp.py](/canhttp.py) to `/home/pi/`
-    2. Copy [canhttp.service](/canhttp.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
+    1. Copy [canhttp.py](/examples/canhttp.py) to `/home/pi/`
+    2. Copy [canhttp.service](/unit-files/canhttp.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
     
 
 HTTP to CAN API
