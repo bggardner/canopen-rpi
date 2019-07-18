@@ -22,7 +22,7 @@ NrOfRxPdo=0
 NrOfTxPdo=0
 
 [MandatoryObjects]
-SupportedObjects=3
+SupportedObjects=4
 1=0x1000
 2=0x1001
 3=0x1017

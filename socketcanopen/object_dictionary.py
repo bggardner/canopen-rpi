@@ -1,5 +1,6 @@
 from collections import Mapping, MutableMapping
 from configparser import ConfigParser
+from datetime import datetime, timedelta
 from enum import Enum, IntEnum, unique
 
 from .constants import *
@@ -351,8 +352,7 @@ class ObjectDictionary(MutableMapping):
         self.update(other, **kwargs)
 
     def __getitem__(self, index):
-        obj = self._store[index]
-        return obj
+        return self._store[index]
 
     def __setitem__(self, index, obj):
         if type(index) is not int:
@@ -360,8 +360,7 @@ class ObjectDictionary(MutableMapping):
         if index < 0 or index >= 2 ** 16:
             raise IndexError("CANopen object dictionary index must be a positive 16-bit integer")
         if not isinstance(obj, Object):
-            if type(obj) not in [bool, int, float, str]:
-                raise TypeError("CANopen object dictionary can only consist of CANopen objects or one of bool, int, float, or str")
+            raise TypeError("CANopen object dictionary can only consist of CANopen Objects")
         self._store[index] = obj
 
     def __delitem__(self, index):
@@ -385,7 +384,7 @@ class ObjectDictionary(MutableMapping):
         eds.read(filename)
         indices = []
         for section in ['MandatoryObjects', 'OptionalObjects', 'ManufacturerObjects']:
-            if section not in eds:
+            if not eds.has_section(section):
                 continue
             n = int(eds[section]['SupportedObjects'])
             for i in range(1, n + 1):
@@ -539,10 +538,53 @@ class ProtoObject(MutableMapping):
         else:
             access_type = None
         if 'DefaultValue' in cfg:
-            try:
-                default_value = int(cfg['DefaultValue'], 0)
-            except ValueError:
-                default_value = cfg['DefaultValue'] # TODO: Validate values
+            # TODO: Parse $NODEID
+            if data_type == ODI_DATA_TYPE_BOOLEAN:
+                default_value = bool(int(cfg['DefaultValue'], 0))
+            elif data_type in [
+                ODI_DATA_TYPE_INTEGER8,
+                ODI_DATA_TYPE_INTEGER16,
+                ODI_DATA_TYPE_INTEGER24,
+                ODI_DATA_TYPE_INTEGER32,
+                ODI_DATA_TYPE_INTEGER40,
+                ODI_DATA_TYPE_INTEGER48,
+                ODI_DATA_TYPE_INTEGER56,
+                ODI_DATA_TYPE_INTEGER64,
+                ODI_DATA_TYPE_UNSIGNED8,
+                ODI_DATA_TYPE_UNSIGNED16,
+                ODI_DATA_TYPE_UNSIGNED24,
+                ODI_DATA_TYPE_UNSIGNED32,
+                ODI_DATA_TYPE_UNSIGNED40,
+                ODI_DATA_TYPE_UNSIGNED48,
+                ODI_DATA_TYPE_UNSIGNED56,
+                ODI_DATA_TYPE_UNSIGNED64
+                ]:
+                try:
+                    default_value = int(cfg['DefaultValue'], 0) # Try to auto-detect decimal or hexadecimal
+                except ValueError:
+                    if cfg['DefaultValue'][0] == '0':
+                        default_value = int(cfg['DefaultValue'], 8) # Try octal
+                    else:
+                        raise ValueError('Invalid integer format')
+            elif data_type in [ODI_DATA_TYPE_REAL32, ODI_DATA_TYPE_REAL64]:
+                default_value = float(cfg['DefaultValue'])
+            elif data_type in [ODI_DATA_TYPE_VISIBLE_STRING, ODI_DATA_TYPE_UNICODE_STRING]:
+                default_value = cfg['DefaultValue']
+            elif data_type == ODI_DATA_TYPE_TIME_OF_DAY:
+                raise NotImplementedError
+            elif data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
+                raise NotImplementedError
+            elif data_type in [ODI_DATA_TYPE_OCTET_STRING, ODI_DATA_TYPE_DOMAIN]:
+                 default_value = bytes.fromhex(cfg['DefaultValue'])
+            else:
+                # Without explicit data type, probably is integer, float, otherwise default to string
+                try:
+                    default_value = int(cfg['DefaultValue'], 0)
+                except ValueError:
+                    try:
+                        default_value = float(cfg['DefaultValue'])
+                    except ValueError:
+                        default_value = cfg['DefaultValue']
         else:
             default_value = None
         if 'PDOMapping' in cfg:
@@ -565,9 +607,106 @@ class SubObject(ProtoObject):
         super().__init__(**kwargs)
         self.value = self.default_value
 
+    def __bytes__(self):
+        if self.data_type == ODI_DATA_TYPE_BOOLEAN:
+            return bytes([bool(self.value)])
+        if isinstance(self.value, int):
+            if self.data_type == ODI_DATA_TYPE_INTEGER8:
+                return self.value.to_bytes(1, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER16:
+                return self.value.to_bytes(2, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER24:
+                return self.value.to_bytes(3, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER32:
+                return self.value.to_bytes(4, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER40:
+                return self.value.to_bytes(5, byteorder='little', signed=True)
+        if self.data_type == ODI_DATA_TYPE_INTEGER48:
+            return self.value.to_bytes(6, byteorder='little', signed=True)
+        if self.data_type == ODI_DATA_TYPE_INTEGER56:
+            return self.value.to_bytes(7, byteorder='little', signed=True)
+        if self.data_type == ODI_DATA_TYPE_INTEGER64:
+            return self.value.to_bytes(8, byteorder='little', signed=True)
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED8:
+            return self.value.to_bytes(1, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED16:
+            return self.value.to_bytes(2, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED24:
+            return self.value.to_bytes(3, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED32:
+            return self.value.to_bytes(4, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED40:
+            return self.value.to_bytes(5, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED48:
+            return self.value.to_bytes(6, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED56:
+            return self.value.to_bytes(7, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_UNSIGNED64:
+            return self.value.to_bytes(8, byteorder='little')
+        if isinstance(self.value, float):
+            if self.data_type == ODI_DATA_TYPE_REAL32:
+              return struct.pack("<f", self.value)
+            if self.data_type == ODI_DATA_TYPE_REAL64:
+              return struct.pack("<d", self.value)
+        if isisntance(self.value, str):
+            if self.data_type == ODI_DATA_TYPE_VISIBLE_STRING:
+                return bytes(self.value, 'ascii') # CANopen Visible String encoding is ISO 646-1974 (ASCII)
+            if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
+                return bytes(self.value, 'utf_16') # CANopen Unicode Strings are arrays of UNSIGNED16, assuming UTF-16
+        if isinstance(self.value, datetime.datetime):
+            td = self.value - datetime.datetime(1984, 1, 1)
+            return struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days)
+        if isisntance(self.value, datetime.timedelta):
+            return struct.pack("<IH", int(self.value.seconds * 1000 + self.value.microseconds / 1000) << 4, self.value.days)
+        return bytes(self.value) # Try casting if nothing else worked; custom data types should implement __bytes__()
+
+    def from_bytes(self, b):
+        if self.data_type == ODI_DATA_TYPE_BOOLEAN:
+            return bool(b[0])
+        if self.data_type in [
+            ODI_DATA_TYPE_INTEGER8,
+            ODI_DATA_TYPE_INTEGER16,
+            ODI_DATA_TYPE_INTEGER24,
+            ODI_DATA_TYPE_INTEGER32,
+            ODI_DATA_TYPE_INTEGER40,
+            ODI_DATA_TYPE_INTEGER48,
+            ODI_DATA_TYPE_INTEGER56,
+            ODI_DATA_TYPE_INTEGER64
+            ]:
+            return int.from_bytes(b, byteorder='little', signed=True)
+        if self.data_type in [
+            ODI_DATA_TYPE_UNSIGNED8,
+            ODI_DATA_TYPE_UNSIGNED16,
+            ODI_DATA_TYPE_UNSIGNED24,
+            ODI_DATA_TYPE_UNSIGNED32,
+            ODI_DATA_TYPE_UNSIGNED40,
+            ODI_DATA_TYPE_UNSIGNED48,
+            ODI_DATA_TYPE_UNSIGNED56,
+            ODI_DATA_TYPE_UNSIGNED64
+            ]:
+            return int.from_bytes(b, byteorder='little')
+        if self.data_type == ODI_DATA_TYPE_REAL32:
+            return struct.unpack("<f", b)
+        if self.data_type == ODI_DATA_TYPE_REAL64:
+            return struct.unpack("<d", b)
+        if self.data_type == ODI_DATA_TYPE_VISIBLE_STRING:
+            return b.decode('ascii')
+        if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
+            return b.decode('utf_16')
+        if self.data_type == ODI_DATA_TYPE_TIME_OF_DAY:
+            ms, d = struct.unpack("<IH", b)
+            ms = ms >> 4
+            dt = datetime.timedelta(days=d, milliseconds=ms)
+            return datetime.datetime(1980, 1, 1) + dt
+        if self.data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
+            ms, d = struct.unpack("<IH", b)
+            ms = ms >> 4
+            return datetime.timedelta(days=d, milliseconds=ms)
+        return b # ODI_DATA_TYPE_OCTET_STRING or ODI_DATA_TYPE_DOMAIN
+
     def __setitem__(self, name, value):
-        if name == "value" and type(value) not in [bool, int, float, str]: # TODO: Expand data type support
-            raise TypeError("CANopen objects can only be set to one of bool, int, float, or str")
+        if name == "value" and type(value) not in [bool, int, float, str, bytes, bytearray, datetime, timedelta]: # TODO: Somehow support DOMAIN data type
+            raise TypeError("CANopen objects can only be set to one of bool, int, float, str, bytes, bytearray, datetime, or timedelta")
         super().__setattr__(name,  value)
 
     @classmethod
