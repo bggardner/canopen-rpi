@@ -29,10 +29,21 @@ SupportedObjects=4
 4=0x1018
 
 [OptionalObjects]
-SupportedObjects=0
+SupportedObjects=1
+1=0x1200
 
 [ManufacturerObjects]
-SupportedObjects=0
+SupportedObjects=10
+1=0x2000
+2=0x2001
+3=0x2002
+4=0x2003
+5=0x2004
+6=0x2005
+7=0x2006
+8=0x2007
+9=0x2008
+10=0x2009
 
 [1000]
 SubNumber=0
@@ -68,18 +79,134 @@ DataType=0x0023
 
 [1018sub0]
 ParameterName=Number of entries
+ObjectType=0x7
+DataType=0x0005
 AccessType=ro
 DefaultValue=0x02
 PDOMapping=0
 
 [1018sub1]
 ParameterName=Vendor ID
+ObjectType=0x7
+DataType=0x0007
 AccessType=ro
 DefaultValue=0x00000000
 PDOMapping=0
 
 [1018sub2]
 ParameterName=Product ID
+ObjectType=0x7
+DataType=0x0007
 AccessType=ro
 DefaultValue=0x00000000
 PDOMapping=0
+
+[1200]
+SubNumber=2
+ParameterName=SDO server parameter
+ObjectType=0x9
+DataType=0x0022
+
+[1200sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=const
+DefaultValue=0x02
+PDOMapping=0
+
+[1200sub1]
+ParameterName=COB-ID client -> server (rx)
+ObjectType=0x7
+DataType=0x0007
+AccessType=const
+DefaultValue=$NODEID+0x0600
+PDOMapping=0
+
+[1200sub2]
+ParameterName=COB-ID server -> client (tx)
+ObjectType=0x7
+DataType=0x0007
+AccessType=const
+DefaultValue=$NODEID+0x0580
+PDOMapping=0
+
+[2000]
+SubNumber=0
+ParameterName=Boolean True
+ObjectType=0x7
+DataType=0x0001
+AccessType=rw
+DefaultValue=0
+
+[2001]
+SubNumber=0
+ParameterName=Boolean False
+ObjectType=0x7
+DataType=0x0001
+AccessType=rw
+DefaultValue=1
+
+[2002]
+SubNumber=0
+ParameterName=INTEGER8 Min
+ObjectType=0x7
+DataType=0x0002
+AccessType=rw
+DefaultValue=-0x80
+
+[2003]
+SubNumber=0
+ParameterName=INTEGER8 Max
+ObjectType=0x7
+DataType=0x0002
+AccessType=rw
+DefaultValue=0x7F
+
+[2004]
+SubNumber=0
+ParameterName=INTEGER16 Min
+ObjectType=0x7
+DataType=0x0003
+AccessType=rw
+DefaultValue=-0x8000
+
+[2005]
+SubNumber=0
+ParameterName=INTEGER16 Max
+ObjectType=0x7
+DataType=0x0003
+AccessType=rw
+DefaultValue=0x7FFF
+
+[2006]
+SubNumber=0
+ParameterName=INTEGER32 Min
+ObjectType=0x7
+DataType=0x0004
+AccessType=rw
+DefaultValue=-0x80000000
+
+[2007]
+SubNumber=0
+ParameterName=INTEGER32 Max
+ObjectType=0x7
+DataType=0x0004
+AccessType=rw
+DefaultValue=0x7FFFFFFF
+
+[2008]
+SubNumber=0
+ParameterName=INTEGER64 Min
+ObjectType=0x7
+DataType=0x0015
+AccessType=rw
+DefaultValue=-0x8000000000000000
+
+[2009]
+SubNumber=0
+ParameterName=INTEGER64 Max
+ObjectType=0x7
+DataType=0x0015
+AccessType=rw
+DefaultValue=0x7FFFFFFFFFFFFFFF

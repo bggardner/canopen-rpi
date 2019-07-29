@@ -11,7 +11,7 @@ can_bus = socketcan.Bus(CAN_INTERFACE)
 
 node_id = 0x02
 
-canopen_od = socketcanopen.ObjectDictionary.from_eds(os.path.dirname(os.path.relpath(__file__)) + '/node.eds')
+canopen_od = socketcanopen.ObjectDictionary.from_eds(os.path.dirname(os.path.relpath(__file__)) + '/node.eds', node_id)
 
 node = socketcanopen.Node(can_bus, node_id, canopen_od)
 

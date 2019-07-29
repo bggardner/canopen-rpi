@@ -360,6 +360,7 @@ class ObjectDictionary(MutableMapping):
         if index < 0 or index >= 2 ** 16:
             raise IndexError("CANopen object dictionary index must be a positive 16-bit integer")
         if not isinstance(obj, Object):
+            print(obj)
             raise TypeError("CANopen object dictionary can only consist of CANopen Objects")
         self._store[index] = obj
 
@@ -379,9 +380,11 @@ class ObjectDictionary(MutableMapping):
             for index, obj in kwargs.items():
                 self[index] = obj
 
-    def from_eds(filename):
+    def from_eds(filename, node_id=None):
         eds = ConfigParser()
         eds.read(filename)
+        if node_id is None:
+            node_id = int(eds['DeviceCommissioning']['NodeID'], 0)
         indices = []
         for section in ['MandatoryObjects', 'OptionalObjects', 'ManufacturerObjects']:
             if not eds.has_section(section):
@@ -395,13 +398,15 @@ class ObjectDictionary(MutableMapping):
             sub_number = int(oc.get('SubNumber', '0'), 0)
             subs = {}
             si = 0
-            while len(subs) < sub_number and si <= 0xFF:
+            while len(subs) <= sub_number and si <= 0xFF:
                 key = "{:4X}sub{:d}".format(i, si)
                 if key in eds:
-                    sub = SubObject.from_config(eds[key])
+                    sub = SubObject.from_config(eds[key], node_id)
                     subs.update({si: sub})
                 si += 1
-            o = Object.from_config(oc, subs)
+            # TODO Check for mandatory properties based on Object.ObjectType
+            # TODO: Assign proper data type to subs if Object.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]
+            o = Object.from_config(oc, node_id, subs)
             od.update({i: o})
         return ObjectDictionary(od)
 
@@ -523,7 +528,7 @@ class ProtoObject(MutableMapping):
                 self[subindex] = value
 
     @staticmethod
-    def _from_config(cfg):
+    def _from_config(cfg, node_id):
         parameter_name = cfg['ParameterName']
         if 'ObjectType' in cfg:
             object_type = ObjectType(int(cfg['ObjectType'], 0))
@@ -538,7 +543,6 @@ class ProtoObject(MutableMapping):
         else:
             access_type = None
         if 'DefaultValue' in cfg:
-            # TODO: Parse $NODEID
             if data_type == ODI_DATA_TYPE_BOOLEAN:
                 default_value = bool(int(cfg['DefaultValue'], 0))
             elif data_type in [
@@ -559,11 +563,15 @@ class ProtoObject(MutableMapping):
                 ODI_DATA_TYPE_UNSIGNED56,
                 ODI_DATA_TYPE_UNSIGNED64
                 ]:
+                default_value = 0
+                if cfg['DefaultValue'][0:8].casefold() == '$NODEID+'.casefold():
+                    default_value = node_id
+                    cfg['DefaultValue'] = cfg['DefaultValue'][8:]
                 try:
-                    default_value = int(cfg['DefaultValue'], 0) # Try to auto-detect decimal or hexadecimal
+                    default_value += int(cfg['DefaultValue'], 0) # Try to auto-detect decimal or hexadecimal
                 except ValueError:
-                    if cfg['DefaultValue'][0] == '0':
-                        default_value = int(cfg['DefaultValue'], 8) # Try octal
+                    if cfg['DefaultValue'][0] == '0' or cfg['DefaultValue'] == '-0':
+                        default_value += int(cfg['DefaultValue'], 8) # Try octal
                     else:
                         raise ValueError('Invalid integer format')
             elif data_type in [ODI_DATA_TYPE_REAL32, ODI_DATA_TYPE_REAL64]:
@@ -621,28 +629,28 @@ class SubObject(ProtoObject):
                 return self.value.to_bytes(4, byteorder='little', signed=True)
             if self.data_type == ODI_DATA_TYPE_INTEGER40:
                 return self.value.to_bytes(5, byteorder='little', signed=True)
-        if self.data_type == ODI_DATA_TYPE_INTEGER48:
-            return self.value.to_bytes(6, byteorder='little', signed=True)
-        if self.data_type == ODI_DATA_TYPE_INTEGER56:
-            return self.value.to_bytes(7, byteorder='little', signed=True)
-        if self.data_type == ODI_DATA_TYPE_INTEGER64:
-            return self.value.to_bytes(8, byteorder='little', signed=True)
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED8:
-            return self.value.to_bytes(1, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED16:
-            return self.value.to_bytes(2, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED24:
-            return self.value.to_bytes(3, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED32:
-            return self.value.to_bytes(4, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED40:
-            return self.value.to_bytes(5, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED48:
-            return self.value.to_bytes(6, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED56:
-            return self.value.to_bytes(7, byteorder='little')
-        if self.data_type == ODI_DATA_TYPE_UNSIGNED64:
-            return self.value.to_bytes(8, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_INTEGER48:
+                return self.value.to_bytes(6, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER56:
+                return self.value.to_bytes(7, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_INTEGER64:
+                return self.value.to_bytes(8, byteorder='little', signed=True)
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED8:
+                return self.value.to_bytes(1, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED16:
+                return self.value.to_bytes(2, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED24:
+                return self.value.to_bytes(3, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED32:
+                return self.value.to_bytes(4, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED40:
+                return self.value.to_bytes(5, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED48:
+                return self.value.to_bytes(6, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED56:
+                return self.value.to_bytes(7, byteorder='little')
+            if self.data_type == ODI_DATA_TYPE_UNSIGNED64:
+                return self.value.to_bytes(8, byteorder='little')
         if isinstance(self.value, float):
             if self.data_type == ODI_DATA_TYPE_REAL32:
               return struct.pack("<f", self.value)
@@ -710,8 +718,8 @@ class SubObject(ProtoObject):
         super().__setattr__(name,  value)
 
     @classmethod
-    def from_config(cls, cfg):
-        po = super()._from_config(cfg)
+    def from_config(cls, cfg, node_id):
+        po = super()._from_config(cfg, node_id)
         return cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,
@@ -776,8 +784,8 @@ class Object(ProtoObject):
         self._store[subindex] = sub_object
 
     @classmethod
-    def from_config(cls, cfg, subs):
-        po = super()._from_config(cfg)
+    def from_config(cls, cfg, node_id, subs):
+        po = super()._from_config(cfg, node_id)
         return cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,

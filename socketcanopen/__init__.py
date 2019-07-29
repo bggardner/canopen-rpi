@@ -579,7 +579,7 @@ class Node:
                                     self._sdo_odsi = odsi
                                     s = 1
                                     e = 0
-                                    n = 8 - (data_type_length // 8)
+                                    n = 0
                                     sdo_data = struct.pack("<I", data_type_length)
                                 else:
                                     n = 4 - data_type_length
@@ -596,11 +596,12 @@ class Node:
                                     raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_TOGGLE)
                                 self._sdo_t = t ^ 1
                                 if self._sdo_len > 7:
-                                    n = 7
+                                    l = 7
                                 else:
-                                    n = self._sdo_len
-                                sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+n or None)]
-                                self._sdo_len -= n
+                                    l = self._sdo_len
+                                sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+l or None)]
+                                self._sdo_len -= l
+                                n = 7 - l
                                 if self._sdo_len > 0:
                                     c = 0
                                 else:
@@ -608,7 +609,7 @@ class Node:
                                     self._sdo_len = None
                                     self._sdo_t = None
                                     c = 1
-                                data = struct.pack("<B{}s".format(max(7, 8 - n)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
+                                data = struct.pack("<B{}s".format(len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
                             else:
                                 raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_CS)
                         except SdoAbort as a:
