@@ -102,7 +102,7 @@ while True:
                     socketcanopen.ODI_SYNC: socketcanopen.Object(
                         parameter_name="COB-ID SYNC",
                         object_type=socketcanopen.ObjectType.VAR,
-                        access_type=socketcanopen.AccessType.CONST,
+                        access_type=socketcanopen.AccessType.RW,
                         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
                         default_value=0x00000000 + (socketcanopen.FUNCTION_CODE_SYNC << socketcanopen.FUNCTION_CODE_BITNUM), # 0x40000000 + ... if SYNC producer
                     ),
