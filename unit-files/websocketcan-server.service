@@ -8,4 +8,4 @@ Type=idle
 ExecStart=/home/pi/websocketcan-server.py
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=can_if.service
