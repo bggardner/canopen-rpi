@@ -55,8 +55,8 @@ class NmtMessage(Message):
             return NmtNodeControlMessage.factory(data)
         if cmd == NMT_GFC:
             return NmtGfcMessage()
-        if cmd == NMT_FLYING_MASTER_RESPONSE:
-            return NmtFlyingMasterResponse.factory(data)
+        if cmd == NMT_MASTER_NODE_ID and len(data) == 2:
+            return NmtMasterNodeIdMessage(data[0], data[1])
         if cmd == NMT_FLYING_MASTER_REQUEST:
             return NmtFlyingMasterRequest()
         if cmd == NMT_ACTIVE_MASTER_REQUEST:
@@ -86,9 +86,10 @@ class NmtGfcMessage(NmtMessage):
         super().__init__(NMT_GFC, bytes())
 
 
-class NmtFlyingMasterResponse(NmtMessage):
+class NmtMasterNodeIdMessage(NmtMessage):
     def __init__(self, priority, node_id):
-        super().__init__(NMT_FLYING_MASTER_RESPONSE, bytes([priority, node_id]))
+        super().__init__(NMT_MASTER_NODE_ID, bytes([priority, node_id]))
+
 
     @classmethod
     def factory(cls, data):

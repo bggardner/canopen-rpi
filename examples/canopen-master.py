@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 from functools import reduce
+import logging
 from operator import xor
 import RPi.GPIO as GPIO
 import signal
@@ -9,6 +10,8 @@ from sys import exit
 import socketcan
 import socketcanopen
 
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 DEFAULT_CAN_INTERFACE = "vcan0"
 REDUNDANT_CAN_INTERFACE = "vcan1"
@@ -55,7 +58,7 @@ class ResetCommunication(Exception):
 while True:
     try:
         if GPIO.input(PIN_ENABLE_N) == GPIO.HIGH:
-            print("Enable_n is high")
+            logger.warning("Enable_n is high")
             sleep(1)
             raise ResetNode
         while True:
@@ -70,7 +73,7 @@ while True:
                     GPIO.input(PIN_ADDRESS_N[0])]
                 address_parity_n = reduce(xor, address_n)
                 if address_parity_n != GPIO.input(PIN_ADDRESS_PARITY_N):
-                    print("Address parity mismatch")
+                    logger.warning("Address parity mismatch")
                     sleep(1)
                     raise ResetCommunication
 
@@ -79,11 +82,10 @@ while True:
                     node_id = (node_id << 1) | (not bit)
 
                 if node_id == socketcanopen.BROADCAST_NODE_ID:
-                    print("Invalid Node ID")
+                    logger.warning("Invalid Node ID")
                     sleep(1)
                     raise ResetCommunication
 
-                print("Booting with Node ID: {:d}".format(node_id))
                 canopen_od = socketcanopen.ObjectDictionary({
                     socketcanopen.ODI_DEVICE_TYPE: socketcanopen.Object(
                         parameter_name="Device type",
@@ -112,6 +114,13 @@ while True:
                         access_type=socketcanopen.AccessType.RW,
                         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
                         default_value=1000000 # 1 second, 32-bit, in us
+                    ),
+                    socketcanopen.ODI_TIME_STAMP: socketcanopen.Object(
+                        parameter_name="COB-ID time stamp object",
+                        object_type=socketcanopen.ObjectType.VAR,
+                        access_type=socketcanopen.AccessType.RW,
+                        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=(socketcanopen.FUNCTION_CODE_TIME_STAMP << socketcanopen.FUNCTION_CODE_BITNUM) + node_id
                     ),
                     socketcanopen.ODI_EMCY_ID: socketcanopen.Object(
                         parameter_name="COB-ID emergency message",
@@ -198,6 +207,13 @@ while True:
                                 default_value=0x00000001
                             )
                         }
+                    ),
+                    socketcanopen.ODI_NMT_INHIBIT_TIME: socketcanopen.Object(
+                        parameter_name="NMT inhibit time",
+                        object_type=socketcanopen.ObjectType.VAR,
+                        access_type=socketcanopen.AccessType.RW,
+                        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED16,
+                        default_value=0 # in ms
                     ),
                     socketcanopen.ODI_SDO_SERVER: socketcanopen.Object(
                         parameter_name="Server SDO parameter",
@@ -302,6 +318,30 @@ while True:
                         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
                         default_value=0x00000023 # Flying master, NMT master start, NMT master
                     ),
+                    socketcanopen.ODI_REQUEST_NMT: socketcanopen.Object(
+                        parameter_name="NMT flying master timing parameters",
+                        object_type=socketcanopen.ObjectType.ARRAY,
+                        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
+                        sub_number=80,
+                        subs=dict(list({
+                            socketcanopen.ODSI_VALUE: socketcanopen.SubObject(
+                                parameter_name="Highest sub-index supported",
+                                access_type=socketcanopen.AccessType.CONST,
+                                data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x80,
+                                high_limit=0x80,
+                                default_value=0x80
+                            )
+                            }.items()) + list({index: socketcanopen.SubObject(
+                                parameter_name="Node-ID {} to be mapped".format(index),
+                                access_type=socketcanopen.AccessType.RO,
+                                data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x00,
+                                high_limit=0xFF,
+                                default_value=0x00
+                            ) for index in range(1, 0x81)}.items())
+                        )
+                    ),
                     socketcanopen.ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS: socketcanopen.Object(
                         parameter_name="NMT flying master timing parameters",
                         object_type=socketcanopen.ObjectType.ARRAY,
@@ -338,7 +378,7 @@ while True:
                                 data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED16,
                                 low_limit=0x0000,
                                 high_limit=0xFFFF,
-                                default_value=(node_id - 1) & 0x3
+                                default_value=node_id % 3
                             ),
                             socketcanopen.ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY_TIME_SLOT: socketcanopen.SubObject(
                                 parameter_name="Priority time slot",

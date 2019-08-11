@@ -360,7 +360,6 @@ class ObjectDictionary(MutableMapping):
         if index < 0 or index >= 2 ** 16:
             raise IndexError("CANopen object dictionary index must be a positive 16-bit integer")
         if not isinstance(obj, Object):
-            print(obj)
             raise TypeError("CANopen object dictionary can only consist of CANopen Objects")
         self._store[index] = obj
 
@@ -380,7 +379,9 @@ class ObjectDictionary(MutableMapping):
             for index, obj in kwargs.items():
                 self[index] = obj
 
-    def from_eds(filename, node_id=None):
+    @classmethod
+    def from_eds(cls, filename, node_id=None):
+        # TODO: Support CompactSubObj directive
         eds = ConfigParser()
         eds.read(filename)
         if node_id is None:
@@ -389,13 +390,13 @@ class ObjectDictionary(MutableMapping):
         for section in ['MandatoryObjects', 'OptionalObjects', 'ManufacturerObjects']:
             if not eds.has_section(section):
                 continue
-            n = int(eds[section]['SupportedObjects'])
+            n = ProtoObject._int_from_config_str(eds[section]['SupportedObjects'])
             for i in range(1, n + 1):
-                indices.append(int(eds[section][str(i)], 0))
-        od = {}
+                indices.append(ProtoObject._int_from_config_str(eds[section][str(i)]))
+        od = cls()
         for i in indices:
             oc = eds["{:4X}".format(i)]
-            sub_number = int(oc.get('SubNumber', '0'), 0)
+            sub_number = ProtoObject._int_from_config_str(oc.get('SubNumber', '0'))
             subs = {}
             si = 0
             while len(subs) <= sub_number and si <= 0xFF:
@@ -408,7 +409,7 @@ class ObjectDictionary(MutableMapping):
             # TODO: Assign proper data type to subs if Object.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]
             o = Object.from_config(oc, node_id, subs)
             od.update({i: o})
-        return ObjectDictionary(od)
+        return od
 
 
 @unique
@@ -528,14 +529,14 @@ class ProtoObject(MutableMapping):
                 self[subindex] = value
 
     @staticmethod
-    def _from_config(cfg, node_id):
+    def from_config(cfg, node_id):
         parameter_name = cfg['ParameterName']
         if 'ObjectType' in cfg:
-            object_type = ObjectType(int(cfg['ObjectType'], 0))
+            object_type = ObjectType(ProtoObject._int_from_config_str(cfg['ObjectType']))
         else:
             object_type = None
         if 'DataType' in cfg:
-            data_type = int(cfg['DataType'], 0)
+            data_type = ProtoObject._int_from_config_str(cfg['DataType'])
         else:
             data_type = None
         if 'AccessType' in cfg:
@@ -543,70 +544,101 @@ class ProtoObject(MutableMapping):
         else:
             access_type = None
         if 'DefaultValue' in cfg:
-            if data_type == ODI_DATA_TYPE_BOOLEAN:
-                default_value = bool(int(cfg['DefaultValue'], 0))
-            elif data_type in [
-                ODI_DATA_TYPE_INTEGER8,
-                ODI_DATA_TYPE_INTEGER16,
-                ODI_DATA_TYPE_INTEGER24,
-                ODI_DATA_TYPE_INTEGER32,
-                ODI_DATA_TYPE_INTEGER40,
-                ODI_DATA_TYPE_INTEGER48,
-                ODI_DATA_TYPE_INTEGER56,
-                ODI_DATA_TYPE_INTEGER64,
-                ODI_DATA_TYPE_UNSIGNED8,
-                ODI_DATA_TYPE_UNSIGNED16,
-                ODI_DATA_TYPE_UNSIGNED24,
-                ODI_DATA_TYPE_UNSIGNED32,
-                ODI_DATA_TYPE_UNSIGNED40,
-                ODI_DATA_TYPE_UNSIGNED48,
-                ODI_DATA_TYPE_UNSIGNED56,
-                ODI_DATA_TYPE_UNSIGNED64
-                ]:
-                default_value = 0
-                if cfg['DefaultValue'][0:8].casefold() == '$NODEID+'.casefold():
-                    default_value = node_id
-                    cfg['DefaultValue'] = cfg['DefaultValue'][8:]
-                try:
-                    default_value += int(cfg['DefaultValue'], 0) # Try to auto-detect decimal or hexadecimal
-                except ValueError:
-                    if cfg['DefaultValue'][0] == '0' or cfg['DefaultValue'] == '-0':
-                        default_value += int(cfg['DefaultValue'], 8) # Try octal
-                    else:
-                        raise ValueError('Invalid integer format')
-            elif data_type in [ODI_DATA_TYPE_REAL32, ODI_DATA_TYPE_REAL64]:
-                default_value = float(cfg['DefaultValue'])
-            elif data_type in [ODI_DATA_TYPE_VISIBLE_STRING, ODI_DATA_TYPE_UNICODE_STRING]:
-                default_value = cfg['DefaultValue']
-            elif data_type == ODI_DATA_TYPE_TIME_OF_DAY:
-                raise NotImplementedError
-            elif data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
-                raise NotImplementedError
-            elif data_type in [ODI_DATA_TYPE_OCTET_STRING, ODI_DATA_TYPE_DOMAIN]:
-                 default_value = bytes.fromhex(cfg['DefaultValue'])
-            else:
-                # Without explicit data type, probably is integer, float, otherwise default to string
-                try:
-                    default_value = int(cfg['DefaultValue'], 0)
-                except ValueError:
-                    try:
-                        default_value = float(cfg['DefaultValue'])
-                    except ValueError:
-                        default_value = cfg['DefaultValue']
+            default_value = ProtoObject._value_from_config_str(cfg['DefaultValue'], data_type, node_id)
         else:
             default_value = None
         if 'PDOMapping' in cfg:
             pdo_mapping = bool(cfg['PDOMapping'])
         else:
             pdo_mapping = None
+        if 'LowLimit' in cfg:
+            low_limit = ProtoObject._value_from_config_str(cfg['LowLimit'], data_type, node_id)
+        else:
+            low_limit = None
+        if 'HighLimit' in cfg:
+            high_limit = ProtoObject._value_from_config_str(cfg['HighLimit'], data_type, node_id)
+        else:
+            high_limit = None
         return ProtoObject(
             parameter_name=parameter_name,
             object_type=object_type,
             data_type=data_type,
             access_type=access_type,
             default_value=default_value,
-            pdo_mapping=pdo_mapping
+            pdo_mapping=pdo_mapping,
+            low_limit=low_limit,
+            high_limit=high_limit
         )
+
+    @staticmethod
+    def _int_from_config_str(s):
+        try:
+            return int(s, 0)
+        except:
+            pass
+        if s[0] == '0' or s[0:2] == '-0':
+            try:
+                return int(s, 8) # Try octal
+            except:
+                pass
+        raise ValueError('Invalid integer format')
+
+    @staticmethod
+    def _value_from_config_str(s, data_type=None, node_id=0):
+        if data_type == ODI_DATA_TYPE_BOOLEAN:
+            value = bool(ProtoObject._int_from_config_str(s))
+        elif data_type in [
+            ODI_DATA_TYPE_INTEGER8,
+            ODI_DATA_TYPE_INTEGER16,
+            ODI_DATA_TYPE_INTEGER24,
+            ODI_DATA_TYPE_INTEGER32,
+            ODI_DATA_TYPE_INTEGER40,
+            ODI_DATA_TYPE_INTEGER48,
+            ODI_DATA_TYPE_INTEGER56,
+            ODI_DATA_TYPE_INTEGER64,
+            ODI_DATA_TYPE_UNSIGNED8,
+            ODI_DATA_TYPE_UNSIGNED16,
+            ODI_DATA_TYPE_UNSIGNED24,
+            ODI_DATA_TYPE_UNSIGNED32,
+            ODI_DATA_TYPE_UNSIGNED40,
+            ODI_DATA_TYPE_UNSIGNED48,
+            ODI_DATA_TYPE_UNSIGNED56,
+            ODI_DATA_TYPE_UNSIGNED64
+            ]:
+            value = 0
+            if s[0:8].casefold() == '$NODEID+'.casefold():
+                value = node_id
+                s = s[8:]
+            if s[0:8].casefold() == '$NODEID*'.casefold(): # Technically not allowed in EDS; hack for CiA302-2
+                try:
+                    multiplier = ProtoObject._int_from_config_str(s[8:])
+                except:
+                    multiplier, addend = s[8:].split('+', 2)
+                    multiplier = ProtoObject._int_from_config_str(multiplier)
+                addend = ProtoObject._int_from_config_str(addend)
+                value = node_id * multiplier + addend
+                s = s[8:]
+            value += ProtoObject._int_from_config_str(s)
+        elif data_type in [ODI_DATA_TYPE_REAL32, ODI_DATA_TYPE_REAL64]:
+            value = float(s)
+        elif data_type in [ODI_DATA_TYPE_VISIBLE_STRING, ODI_DATA_TYPE_UNICODE_STRING]:
+            value = s
+        elif data_type == ODI_DATA_TYPE_TIME_OF_DAY:
+            raise NotImplementedError
+        elif data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
+            raise NotImplementedError
+        elif data_type in [ODI_DATA_TYPE_OCTET_STRING, ODI_DATA_TYPE_DOMAIN]:
+             value = bytes.fromhex(s)
+        else:
+            # Without explicit data type, probably is integer, float, otherwise default to string
+            try:
+                value = ProtoObject._int_from_config_str(s)
+            except ValueError:
+                try:
+                    value = float(s)
+                except ValueError:
+                    value = s
+        return value
 
 
 class SubObject(ProtoObject):
@@ -704,8 +736,8 @@ class SubObject(ProtoObject):
         if self.data_type == ODI_DATA_TYPE_TIME_OF_DAY:
             ms, d = struct.unpack("<IH", b)
             ms = ms >> 4
-            dt = datetime.timedelta(days=d, milliseconds=ms)
-            return datetime.datetime(1980, 1, 1) + dt
+            td = datetime.timedelta(days=d, milliseconds=ms)
+            return datetime.datetime(1980, 1, 1) + td
         if self.data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
             ms, d = struct.unpack("<IH", b)
             ms = ms >> 4
@@ -719,15 +751,22 @@ class SubObject(ProtoObject):
 
     @classmethod
     def from_config(cls, cfg, node_id):
-        po = super()._from_config(cfg, node_id)
-        return cls(
+        po = super().from_config(cfg, node_id)
+        so = cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,
             data_type=po.data_type,
             access_type=po.access_type,
             default_value=po.default_value,
-            pdo_mapping=po.pdo_mapping
+            pdo_mapping=po.pdo_mapping,
+            low_limit=po.low_limit,
+            high_limit=po.high_limit
         )
+        if 'ParameterValue' in cfg:
+            so.value = ProtoObject._value_from_config_str(cfg['ParameterValue'])
+        else:
+            so.value = po.default_value
+        return so
 
 
 class Object(ProtoObject):
@@ -775,6 +814,11 @@ class Object(ProtoObject):
             self._store.update(kwargs["subs"])
 
     def __setitem__(self, subindex, sub_object: SubObject):
+        if subindex == "value":
+            subindex = ODSI_VALUE
+            value = sub_object
+            sub_object = self.get(subindex)
+            sub_object.value = value
         if type(subindex) is not int:
             raise TypeError("CANopen object sub-index must be an integer")
         if subindex < 0 or subindex >= 2 ** 8:
@@ -785,14 +829,19 @@ class Object(ProtoObject):
 
     @classmethod
     def from_config(cls, cfg, node_id, subs):
-        po = super()._from_config(cfg, node_id)
-        return cls(
+        po = super().from_config(cfg, node_id)
+        o = cls(
             parameter_name=po.parameter_name,
             object_type=po.object_type,
             data_type=po.data_type,
             access_type=po.access_type,
             default_value=po.default_value,
             pdo_mapping=po.pdo_mapping,
-            sub_number=int(cfg.get('SubNumber', '0'), 0),
+            sub_number=cls._int_from_config_str(cfg.get('SubNumber', '0')),
             subs=subs
         )
+        if 'ParameterValue' in cfg:
+            o.value = ProtoObject._value_from_config_str(cfg['ParameterValue'])
+        else:
+            o.value = po.default_value
+        return o
