@@ -1,5 +1,8 @@
 import errno
-from fcntl import ioctl
+try:
+    from fcntl import ioctl
+except:
+    import time
 import re
 import socket
 import struct
@@ -99,9 +102,12 @@ class Bus(socket.socket):
             if e.errno == errno.ENETDOWN:
                 raise BusDown
             raise
-        res = ioctl(self, 0x8906, struct.pack("@LL", 0, 0))
-        seconds, microseconds = struct.unpack("@LL", res)
-        timestamp = seconds + microseconds / 1000000
+        try:
+            res = ioctl(self, 0x8906, struct.pack("@LL", 0, 0))
+            seconds, microseconds = struct.unpack("@LL", res)
+            timestamp = seconds + microseconds / 1000000
+        except:
+            timestamp = time.time()
         msg = Message.from_bytes(data)
         msg.timestamp = timestamp
         return msg
