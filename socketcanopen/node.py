@@ -521,7 +521,7 @@ class Node:
                                     logger.error("SDO Download Initiate Request with e=0 & s=0 aborted")
                                     raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
                                 if e == 1: # Handle special cases
-                                    if odi == ODI_PREDFINED_ERROR_FIELD and subobj.value != 0:
+                                    if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
                                     if odi == ODI_REQUEST_NMT:
                                         if not self.is_active_nmt_master:
