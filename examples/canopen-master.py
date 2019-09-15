@@ -318,11 +318,35 @@ while True:
                         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
                         default_value=0x00000023 # Flying master, NMT master start, NMT master
                     ),
+                    socketcanopen.ODI_NMT_SLAVE_ASSIGNMENT: socketcanopen.Object(
+                        parameter_name="NMT slave assignment",
+                        object_type=socketcanopen.ObjectType.ARRAY,
+                        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
+                        sub_number=0x7F,
+                        subs=dict(list({
+                            socketcanopen.ODSI_VALUE: socketcanopen.SubObject(
+                                parameter_name="Highest sub-index supported",
+                                access_type=socketcanopen.AccessType.CONST,
+                                data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
+                                low_limit=0x7F,
+                                high_limit=0x7F,
+                                default_value=0x7F
+                            )
+                            }.items()) + list({index: socketcanopen.SubObject(
+                                parameter_name="Node-ID {}".format(index),
+                                access_type=socketcanopen.AccessType.RO,
+                                data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
+                                low_limit=0x00000000,
+                                high_limit=0xFFFFFFFF,
+                                default_value=0x00000000
+                            ) for index in range(1, 0x80)}.items())
+                        )
+                    ),
                     socketcanopen.ODI_REQUEST_NMT: socketcanopen.Object(
                         parameter_name="NMT flying master timing parameters",
                         object_type=socketcanopen.ObjectType.ARRAY,
                         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
-                        sub_number=80,
+                        sub_number=0x80,
                         subs=dict(list({
                             socketcanopen.ODSI_VALUE: socketcanopen.SubObject(
                                 parameter_name="Highest sub-index supported",
@@ -333,7 +357,7 @@ while True:
                                 default_value=0x80
                             )
                             }.items()) + list({index: socketcanopen.SubObject(
-                                parameter_name="Node-ID {} to be mapped".format(index),
+                                parameter_name="Node-ID {}".format(index),
                                 access_type=socketcanopen.AccessType.RO,
                                 data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
                                 low_limit=0x00,
@@ -341,6 +365,13 @@ while True:
                                 default_value=0x00
                             ) for index in range(1, 0x81)}.items())
                         )
+                    ),
+                    socketcanopen.ODI_BOOT_TIME: socketcanopen.Object(
+                        parameter_name="Boot time",
+                        object_type=socketcanopen.ObjectType.VAR,
+                        access_type=socketcanopen.AccessType.RW,
+                        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
+                        default_value=0x00001388 # 5 sec
                     ),
                     socketcanopen.ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS: socketcanopen.Object(
                         parameter_name="NMT flying master timing parameters",
@@ -407,6 +438,12 @@ while True:
                         }
                     ),
                 })
+
+                nmt_slave_assignments = canopen_od.get(socketcanopen.ODI_NMT_SLAVE_ASSIGNMENT)
+                nmt_slave_assignment = nmt_slave_assignments.get(0x02)
+                nmt_slave_assignment.value = 0x00000009 # Mandatory slave
+                nmt_slave_assignments.update({0x02: nmt_slave_assignment})
+                canopen_od.update({socketcanopen.ODI_NMT_SLAVE_ASSIGNMENT: nmt_slave_assignments})
 
                 with socketcanopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0) as node:
                     while True:

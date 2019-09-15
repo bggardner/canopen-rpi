@@ -1,8 +1,9 @@
 #TODO: OSErrors are thrown if the CAN bus goes down, need to do threaded Exception handling
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
 #TODO: Check for BUS-OFF before attempting to send
-#from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 import logging
+import math
 from select import select
 import struct
 from threading import Event, Thread, Timer, enumerate
@@ -54,6 +55,15 @@ class SdoTimeout(Exception):
 
 
 class Node:
+    BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES = {
+        0x1F85: "D",
+        0x1F86: "M",
+        0x1F87: "N",
+        0x1F88: "O"
+    }
+    SDO_TIMEOUT = 0.3
+    SDO_ROUND_TRIP_TIME = 222e-6
+
     def __init__(self, bus: socketcan.Bus, id, od: ObjectDictionary, *args, **kwargs):
         self.bus = bus
         if id > 0x7F or id <= 0:
@@ -93,6 +103,7 @@ class Node:
         self._nmt_flying_master_timer = None
         self._nmt_inhibit_time = 0
         self._nmt_multiple_master_timer = None
+        self._nmt_slave_booters = {}
         self._pending_emcy_msgs = []
         self._sdo_data = None
         self._sdo_data_type = None
@@ -100,6 +111,7 @@ class Node:
         self._sdo_t = None
         self._sdo_odi = None
         self._sdo_odsi = None
+        self._sdo_requests = {}
         self._sync_counter = 0
         self._sync_timer = None
         self._timedelta = timedelta()
@@ -179,7 +191,7 @@ class Node:
             slaves_obj_length = slaves_obj.get(ODSI_VALUE).value
             for slave_id in range(1, slaves_obj_length + 1):
                 slave = slaves_obj.get(slave_id).value
-                if slave & 0x08:
+                if (slave & 0x09) == 0x09:
                     mandatory_slaves += [slave_id]
                 if (slave & 0x10) == 0:
                     reset_communication_slaves += [slave_id]
@@ -197,10 +209,18 @@ class Node:
         boot_time_obj = self.od.get(ODI_BOOT_TIME)
         if boot_time_obj is not None:
             self._nmt_boot_timer = Timer(boot_time_obj.get(ODSI_VALUE).value / 1000, self._nmt_boot_timeout)
-        # TODO: Threaded Boot NMT slave
+            self._nmt_boot_timer.start()
+        self._nmt_slave_booters = {}
+        for slave_id in mandatory_slaves:
+            self._nmt_slave_booters[slave_id] = {"thread": Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None}
+            self._nmt_slave_booters[slave_id]["thread"].start()
         mandatory_slaves_booted = 0
-        while (len(mandatory_slaves) < mandatory_slaves_booted) or not self._nmt_boot_time_expired:
+        while (len(mandatory_slaves) > mandatory_slaves_booted) and not self._nmt_boot_time_expired:
             mandatory_slaves_booted = 0
+            # Hack until self._nmt_boot_slave() is fully implemented
+            #for slave_id, booter in self._nmt_slave_booters:
+            #    if booter["status"] == "OK":
+            #        mandatory_slaves_booted += 1
             request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
             if request_nmt_obj is not None:
                 for slave_id in mandatory_slaves:
@@ -208,22 +228,23 @@ class Node:
                     if slave_nmt_state is not None and slave_nmt_state.value > 0x01:
                         mandatory_slaves_booted += 1
             sleep(0.25)
+        if self._nmt_boot_time_expired:
+            logger.warning("NMT boot time expired before all mandatory slaves booted, halting NMT boot")
+            return
+        logger.debug("All mandatory slaves booted ({})".format(mandatory_slaves_booted))
         #End process boot NMT slave
 
-        request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
-        for slave_id in mandatory_slaves:
-            if request_nmt_obj.get(slave_id).value <= 0x01:
-                return # Halt startup procedure
-
         nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
+        if (nmt_startup & 0x04) == 0: # Self-starting
+            self.nmt_state = NMT_STATE_OPERATIONAL
         if (nmt_startup & 0x08) == 0:
-            if nmt_startup & 0x01: # Start all nodes
+            if nmt_startup & 0x02: # Start all nodes
+                logger.debug("Starting all NMT slaves")
                 self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
             elif slaves_obj is not None:
                 for slave_id in range(1, slaves_obj_length + 1):
+                    logger.debug("Starting slave ID {}".format(slave_id))
                     self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
-        if (nmt_startup & 0x04) == 0: # Self-starting
-            self.nmt_state = NMT_STATE_OPERATIONAL
 
     def _nmt_become_inactive_master(self):
         logger.info("Device is not active NMT master, running in NMT slave mode")
@@ -234,6 +255,87 @@ class Node:
             heartbeat_producer_time = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME).get(ODSI_VALUE).value
             self._nmt_active_master_timer = Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
             self._nmt_active_master_timer.start()
+
+    def _nmt_boot_slave(self, slave_id):
+        logger.debug("Boot NMT slave process for slave ID {}".format(slave_id))
+        nmt_slave_assignment = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT).get(slave_id).value
+        if (nmt_slave_assignment & 0x01) == 0: # Is NMT slave node-ID still in network list?
+            logger.debug("Slave ID {} is not longer in the network list".format(slave_id))
+            self._nmt_slave_booters[slave_id]["status"] = "A"
+            return
+        route_d = False
+        route_e = True
+        if nmt_slave_assignment & 0x02: # Boot NMT slave?
+            route_e = False
+            slave_device_type = self._sdo_upload_request(slave_id, 0x1000, 0x00)
+            if slave_device_type is None:
+                logger.debug("Invalid response for device type from slave ID {}".format(slave_id))
+                self._nmt_slave_booters[slave_id]["status"] = "B"
+                return
+            slave_device_type = int.from_bytes(slave_device_type[4:8])
+            logger.debug("Received SDO response from slave ID {} with device type of 0x{:04X}".format(slave_id, device_type))
+            device_type_id_obj = self.od.get(ODI_DEVICE_TYPE_IDENTIFICATION)
+            if device_type_id_obj is not None:
+                device_type_id_subobj = device_type_id_obj.get(slave_id)
+                if device_type_id_subobj is not None and device_type_id_subobj.value != 0 and device_type_id_subobj.value != slave_device_type:
+                    logger.debug("Device type mismatch for slave ID {}".format(slave_id))
+                    self._nmt_slave_booters[slave_id]["status"] = "C"
+                    return
+            for index in range(0x1F85, 0x1F89):
+                obj = self.od.get(index)
+                if obj is None: continue
+                subobj = obj.get(slave_id)
+                if subobj is not None and subobj.value != 0:
+                    response = self._sdo_upload_request(slave_id, 0x1018, index - 0x1F84)
+                    if response is None:
+                        logger.debug("Invalid response from slave ID {} for index 0x{:04X}".format(slave_id, index))
+                        self._nmt_slave_booters[slave_id]["status"] = BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES[index]
+                        return
+            # TODO: Route B, route_d can be set here
+            # Begin Route C
+            expected_cfg_date = 0
+            expected_cfg_date_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_DATE)
+            if expected_cfg_date_obj is not None:
+                expected_cfg_date = expected_cfg_date_obj.get(slave_id).value
+            expected_cfg_time = 0
+            expected_cfg_time_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_TIME)
+            if expected_cfg_time_obj is not None:
+                expected_cfg_time = expected_cfg_time_obj.get(slave_id).value
+            update_configuration = True
+            if expected_cfg_date != 0 and expected_cfg_time != 0:
+                cfg_date = self._sdo_upload_request(slave_id, 0x1020, 0x01)
+                cfg_time = self._sdo_upload_request(slave_id, 0x1020, 0x02)
+                if cfg_date is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_date and cfg_time is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_time:
+                    update_configuration = False
+            if update_configuration:
+                pass  # TODO: Update configuration
+        # Enter Routes D/E
+        consumer_heartbeat_time_obj = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
+        if consumer_heartbeat_time_obj is not None:
+            for subindex in range(1, consumer_heartbeat_time_obj.get(ODSI_VALUE).value + 1):
+                consumer_heartbeat_time = consumer_heartbeat_time_obj.get(subindex).value
+                if (consumer_heartbeat_time >> 16) & 0x7F == slave_id:
+                    if (consumer_heartbeat_time & 0xFFFF) > 0:
+                        if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
+                            break # Heartbeat indication received
+                        sleep((consumer_heartbeat_time & 0xFFFF) / 1000) # Check again after waiting
+                        if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
+                            break # Heartbeat indication received
+                        self._nmt_slave_booters[slave_id]["status"] = "K"
+                    else:
+                        pass # Node guarding not supported
+                    break
+        if route_d:
+            self._nmt_slave_booters[slave_id]["status"] = "L"
+            return
+        if not route_e:
+            nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+            if nmt_startup_obj is not None:
+                nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+                if (nmt_startup & 0x80) == 0: # The NMT master shall start the NMT slaves
+                    if (nmt_startup & 0x02) == 0 or self.nmt_state == NMT_STATE_OPERATIONAL:
+                        self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
+        self._nmt_slave_booters[slave_id]["status"] = "OK"
 
     def _nmt_boot_timeout(self):
         self._nmt_boot_time_expired = True
@@ -299,6 +401,8 @@ class Node:
                 if (nmt_startup & 0x04) == 0: # Self-starting
                     self.nmt_state = NMT_STATE_OPERATIONAL
                 logger.debug("Entering NMT slave mode")
+        else:
+            logger.debug("Entering NMT slave mode")
 
     def _process_err_indicator(self):
         err_state = self.bus.get_state()
@@ -326,31 +430,20 @@ class Node:
         data = msg.data
         fc = (can_id & FUNCTION_CODE_MASK) >> FUNCTION_CODE_BITNUM # Only look for restricted CAN-IDs using function code
         if msg.is_remote_frame: # CiA recommendeds against using RTRs, but they are still supported
-            target_node = msg.node_id
-            if target_node == self.id or target_node == BROADCAST_NODE_ID:
-                if self.nmt_state == NMT_STATE_OPERATIONAL:
-                    tpdo = None
-                    # TODO: Lookup TPDO CAN-IDs from OD
-                    if fc == FUNCTION_CODE_TPDO1:
-                        tpdo = 1
-                    elif fc == FUNCTION_CODE_TPDO2:
-                        tpdo = 2
-                    elif fc == FUNCTION_CODE_TPDO3:
-                        tpdo = 3
-                    elif fc == FUNCTION_CODE_TPDO4:
-                        tpdo = 4
-                    if tpdo is not None:
-                        tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
-                        if tpdo_cp is not None:
-                            tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                            if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
-                                tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                                if tpdo_cp_type == 0xFC:
-                                    self._tpdo_triggers[0] = True; # Defer until SYNC event
-                                elif tpdo_cp_type == 0xFD:
-                                    self._send_pdo(tpdo)
-                elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
-                    self._send_heartbeat()
+            target_node = can_id & 0x7F
+            if fc == FUNCTION_CODE_NMT_ERROR_CONTROL and (target_node == self.id or target_node == BROADCAST_NODE_ID):
+                self._send_heartbeat()
+            if self.nmt_state == NMT_STATE_OPERATIONAL:
+                for tpdo in range(1, 5):
+                    tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
+                    if tpdo_cp is not None:
+                        tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                        if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
+                            tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                            if tpdo_cp_type == 0xFC:
+                                self._tpdo_triggers[0] = True; # Defer until SYNC event
+                            elif tpdo_cp_type == 0xFD:
+                                self._send_pdo(tpdo)
         elif fc == FUNCTION_CODE_NMT:
             command = can_id & 0x7F
             if command == NMT_NODE_CONTROL:
@@ -437,7 +530,7 @@ class Node:
             if request_nmt_obj is not None:
                 request_nmt_subobj = request_nmt_obj.get(producer_id)
                 if request_nmt_subobj is not None:
-                    request_nmt_subobj.value = NMT_STATE_PREOPERATIONAL if producer_nmt_state == NMT_STATE_INITIALISATION else producer_nmt_state
+                    request_nmt_subobj.value = producer_nmt_state
                     request_nmt_obj.update({producer_id: request_nmt_subobj})
                     self.od.update({ODI_REQUEST_NMT: request_nmt_obj})
 
@@ -521,7 +614,7 @@ class Node:
                                     logger.error("SDO Download Initiate Request with e=0 & s=0 aborted")
                                     raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
                                 if e == 1: # Handle special cases
-                                    if odi == ODI_PREDFINED_ERROR_FIELD and subobj.value != 0:
+                                    if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
                                     if odi == ODI_REQUEST_NMT:
                                         if not self.is_active_nmt_master:
@@ -643,6 +736,12 @@ class Node:
                             raise ValueError("SDO Server SCID not specified")
                         msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
                         self._send(msg)
+                for index in range(0x1280, 0x1300):
+                    if index in self.od:
+                        sdo_client_rx_cob_id = self.od.get(index).get(ODSI_CLIENT_RX)
+                        sdo_server_can_id = sdo_client_rx_cob_id & 0x1FFFFFFF
+                        if ((sdo_client_rx_cob_id & 0x8000) == 0) and can_id == sdo_server_can_id and sdo_server_can_id in self._sdo_requests:
+                            self._sdo_requests[sdo_server_can_id] = data
 
     def _process_sync(self):
         sync_object = self.od.get(ODI_SYNC)
@@ -682,6 +781,20 @@ class Node:
         self._cancel_timer(self._nmt_active_master_timer)
         self._cancel_timer(self._nmt_flying_master_timer)
         self._cancel_timer(self._nmt_multiple_master_timer)
+
+    def _sdo_upload_request(self, node_id, index, subindex):
+        sdo_server_rx_can_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + node_id
+        if self._sdo_requests[sdo_server_rx_can_id] is not None:
+            self._send(SdoAbortResponse(node_id, 0x0000, 0x00, SDO_ABORT_GENERAL))
+        self._sdo_requests[sdo_server_rx_can_id] = None
+        self._send(SdoUploadInitiateRequest(node_id, 0x1000, 0x00))
+        for i in range(math.ceil(SDO_TIMEOUT / SDO_ROUND_TRIP_TIME)):
+            if self._sdo_requests[sdo_server_rx_can_id] is not None:
+                break
+            sleep(SDO_MESSAGE_TIME)
+        if self._sdo_requests[sdo_server_rx_can_id] is None or (self._sdo_requests[sdo_server_rx_can_id][0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
+            return
+        return self._sdo_requests[sdo_server_rx_can_id]
 
     def _send(self, msg: socketcan.Message):
         return self.bus.send(msg)
@@ -740,16 +853,20 @@ class Node:
                              mapped_subobj = mapped_obj.get((mapping_param.value >> 8) & 0xFF)
                         else:
                             raise ValueError("Mapped PDO object does not exist")
-                        if mapped_subobj is not None and mapped_subobj.value is not None:
-                            mapped_bytes = bytes(subobj)
+                        if mapped_subobj is not None:
+                            mapped_bytes = bytes(mapped_subobj)
                             if len(mapped_bytes) != ((mapping_param.value & 0xFF) // 8):
                                 raise ValueError("PDO Mapping length mismatch")
                             data = data + mapped_bytes
                     else:
                         raise ValueError("Mapped PDO object does not exist")
-                msg = PdoMessage(FUNCTION_CODE_TPDO1 + (2 * i), self.id, data)
-                self._send(msg)
-                self._tpdo_triggers[i] = False
+                tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
+                if tpdo_cp is not None:
+                    tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                    if tpdo_cp_id is not None and tpdo_cp_id.value is not None:
+                        msg = socketcan.Message(tpdo_cp_id.value & 0x1FFF, data)
+                        self._send(msg)
+                        self._tpdo_triggers[i] = False
 
     def _send_sync(self):
         sync_object = self.od.get(ODI_SYNC)

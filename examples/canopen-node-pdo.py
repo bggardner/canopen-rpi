@@ -1,9 +1,11 @@
 #!/usr/bin/python3
+import logging
 import signal
 
 import socketcan
 import socketcanopen
 
+logging.basicConfig(level=logging.DEBUG)
 
 CAN_INTERFACE = "vcan0"
 
