@@ -613,11 +613,9 @@ class ProtoObject(MutableMapping):
                 try:
                     multiplier = ProtoObject._int_from_config_str(s[8:])
                 except:
-                    multiplier, addend = s[8:].split('+', 2)
+                    multiplier, s = s[8:].split('+', 2)
                     multiplier = ProtoObject._int_from_config_str(multiplier)
-                addend = ProtoObject._int_from_config_str(addend)
-                value = node_id * multiplier + addend
-                s = s[8:]
+                value = node_id * multiplier
             value += ProtoObject._int_from_config_str(s)
         elif data_type in [ODI_DATA_TYPE_REAL32, ODI_DATA_TYPE_REAL64]:
             value = float(s)
