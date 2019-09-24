@@ -208,8 +208,10 @@ class Node:
         self._nmt_boot_time_expired = False
         boot_time_obj = self.od.get(ODI_BOOT_TIME)
         if boot_time_obj is not None:
-            self._nmt_boot_timer = Timer(boot_time_obj.get(ODSI_VALUE).value / 1000, self._nmt_boot_timeout)
-            self._nmt_boot_timer.start()
+            boot_time = boot_time_obj.get(ODSI_VALUE).value / 1000
+            if boot_time > 0:
+                self._nmt_boot_timer = Timer(boot_time, self._nmt_boot_timeout)
+                self._nmt_boot_timer.start()
         self._nmt_slave_booters = {}
         for slave_id in mandatory_slaves:
             self._nmt_slave_booters[slave_id] = {"thread": Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None}
@@ -235,10 +237,11 @@ class Node:
         #End process boot NMT slave
 
         nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
-        if (nmt_startup & 0x04) == 0: # Self-starting
+        if (nmt_startup & 0x04) == 0:
+            logger.debug("Self-starting")
             self.nmt_state = NMT_STATE_OPERATIONAL
         if (nmt_startup & 0x08) == 0:
-            if nmt_startup & 0x02: # Start all nodes
+            if nmt_startup & 0x02:
                 logger.debug("Starting all NMT slaves")
                 self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
             elif slaves_obj is not None:
@@ -398,7 +401,8 @@ class Node:
                 else:
                     self._nmt_become_active_master()
             else:
-                if (nmt_startup & 0x04) == 0: # Self-starting
+                if (nmt_startup & 0x04) == 0:
+                    logger.debug("Self-starting")
                     self.nmt_state = NMT_STATE_OPERATIONAL
                 logger.debug("Entering NMT slave mode")
         else:
