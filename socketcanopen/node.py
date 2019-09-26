@@ -1,6 +1,7 @@
-#TODO: OSErrors are thrown if the CAN bus goes down, need to do threaded Exception handling
+# TODO: OSErrors are thrown if the CAN bus goes down, need to do threaded Exception handling
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
-#TODO: Check for BUS-OFF before attempting to send
+# TODO: Check for BUS-OFF before attempting to send
+# TODO: NMT error handler (CiA302-2)
 from datetime import datetime, timedelta
 import logging
 import math
@@ -233,7 +234,7 @@ class Node:
         if self._nmt_boot_time_expired:
             logger.warning("NMT boot time expired before all mandatory slaves booted, halting NMT boot")
             return
-        logger.debug("All mandatory slaves booted ({})".format(mandatory_slaves_booted))
+        logger.info("All mandatory slaves booted ({})".format(mandatory_slaves_booted))
         #End process boot NMT slave
 
         nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
@@ -311,7 +312,7 @@ class Node:
                 if cfg_date is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_date and cfg_time is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_time:
                     update_configuration = False
             if update_configuration:
-                pass  # TODO: Update configuration
+                pass  # TODO: Update configuration per CiA 302-3
         # Enter Routes D/E
         consumer_heartbeat_time_obj = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
         if consumer_heartbeat_time_obj is not None:
@@ -538,14 +539,24 @@ class Node:
                     request_nmt_obj.update({producer_id: request_nmt_subobj})
                     self.od.update({ODI_REQUEST_NMT: request_nmt_obj})
 
-            # Service NMT master node-ID
             if self.is_active_nmt_master and producer_nmt_state == NMT_STATE_INITIALISATION:
+                # Service NMT master node-ID
                 nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
                 if nmt_flying_master_timing_params is not None:
                     priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
                 else:
                     priority = 0
                 self.send_nmt(NmtMasterNodeIdMessage(priority, self.id))
+
+                # Bootup handler
+                nmt_slave_assignments = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT)
+                if nmt_slave_assignments is not None:
+                    nmt_slave_assignment = nmt_slave_assignments.get(producer_id)
+                    if nmt_slave_assignment is not None:
+                        if nmt_slave_assignment.value & 0x01:
+                            self._nmt_boot_slave(producer_id) # TODO: Inform application
+                        else:
+                            pass # TODO: Inform application
 
         else: # Check non-restricted CAN-IDs
             if self.nmt_state == NMT_STATE_OPERATIONAL:
