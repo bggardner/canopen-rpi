@@ -67,13 +67,13 @@ class WebSocketCan extends WebSocket {
   addEventListener(type, listener, useCapture, wantsUntrusted) {
     let wrapper = listener;
     if (type == "message") {
-      wrapper = this.messageHandler(listener);
+      wrapper = this._messageHandler(listener);
     }
     super.addEventListener(type, wrapper, useCapture, wantsUntrusted);
   }
 
   set onmessage(handler) {
-    super.onmessage = self.messageHandler(handler);
+    super.onmessage = this._messageHandler(handler);
   }
 
   send(msg) {
@@ -81,7 +81,7 @@ class WebSocketCan extends WebSocket {
     super.send(byteArray.buffer);
   }
 
-  messageHandler(handler) {
+  _messageHandler(handler) {
     return function(event) {
       let init = Object.assign({}, event);
       init.data = CanMessage.from(new Uint8Array(event.data));

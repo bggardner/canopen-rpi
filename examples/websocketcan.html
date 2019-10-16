@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>WebSocketCAN</title>
+<script src="../adapters/websocketcan.js"></script>
+<style>
+body {
+  font-family: Arial, Verdana, sans-serif;
+  display: grid;
+  grid-template-columns: max-content max-content;
+  grid-gap: 5px;
+}
+input {
+  border: 1px solid #aaaa;
+  border-radius: 0.25rem;
+  font-size: 1rem;
+  padding: 0.25rem;
+}
+input[maxlength="2"] { width: 2rem; }
+input[maxlength="3"] { width: 3rem; }
+label { text-align: right; }
+label:after { content: ":"; }
+button {
+  cursor: pointer;
+  font-size: 1rem;
+  border-radius: 0.25rem;
+  padding: 0.25rem;
+}
+#connect:disabled { cursor: wait; }
+</style>
+</head>
+<body>
+<label for="url">URL</label><span><span style="visibility: hidden;">0x</span><input id="url" type="text" placeholder="ws://server:port"><button id="connect">Connect</button></span>
+<label for="id">Identifier</label><span>0x<input id="id" type="text" maxlength="3" placeholder="000"></span>
+<label for="dlc">DLC</label><span><span style="visibility: hidden;">0x</span><input id="dlc" type="number" min="0" max="8" value="0"></span>
+<label for="d0">Data[0]</label><span>0x<input id="d0" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[1]</label><span>0x<input id="d1" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[2]</label><span>0x<input id="d2" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[3]</label><span>0x<input id="d3" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[4]</label><span>0x<input id="d4" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[5]</label><span>0x<input id="d5" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[6]</label><span>0x<input id="d6" type="text" maxlength="2" placeholder="00" disabled></span>
+<label for="d0">Data[7]</label><span>0x<input id="d7" type="text" maxlength="2" placeholder="00" disabled></span>
+<button id="send" disabled>Send</button><br>
+<label for="monitor">Traffic</label><input id="monitor" type="text" style="width: 100%;" disabled>
+<script>
+let ws;
+window.addEventListener("DOMContentLoaded", (event) => {
+  document.querySelector("#connect").addEventListener("click", (event) => {
+    let url = document.querySelector("#url");
+    let wsUrl = url.value;
+    let wsRe = /wss?:\/\/[0-9a-z]+(:[0-9]+)?/i;
+    if (!wsRe.test(wsUrl)) {
+      alert("Invalid URL");
+      return;
+    }
+    url.disabled = true;
+    let connectButton = document.querySelector("#connect");
+    connectButton.disabled = true;
+    connectButton.innerHTML = "Connecting...";
+    if (connectButton.innerHTML == "Connecting...") {
+      ws = new WebSocketCan(wsUrl); // extends WebSocket
+      ws.addEventListener("error", (event) => {
+        alert("Connection error");
+      });
+      ws.addEventListener("open", (event) => {
+        document.querySelector("#send").disabled = false;
+        connectButton.innerHTML = "Disconnect";
+        connectButton.disabled = false;
+      });
+      ws.addEventListener("close", (event) => {
+        document.querySelector("#send").disabled = true;
+        url.disabled = false;
+        connectButton.innerHTML = "Connect";
+        connectButton.disabled = false;
+      });
+      ws.addEventListener("message", (event) => {
+        console.log(event);
+        let msg = event.data; // CanMessage object
+        console.log(msg);
+        let msgStr = event.timeStamp.toString() + " " + msg.arbitrationId.toString(16).padStart(3, "0") + "#";
+        for (let i = 0; i < msg.data.length; i++) {
+          msgStr += msg.data[i].toString(16).padStart(2, "0");
+        }
+        document.querySelector("#monitor").value = msgStr;
+      });
+    } else if (connectButton.innerHTML == "Disconnect") {
+      ws.close(1000);
+    }
+  });
+
+  let dlc = document.querySelector("#dlc");
+  dlc.addEventListener("change", (event) => {
+    let dlcValue = Math.min(8, Math.max(0, parseInt(dlc.value)));
+    dlc.value = dlcValue;
+    for (i = 0; i < 8; i++) {
+      document.querySelector(`#d${i}`).disabled = i >= parseInt(dlc.value);
+    }
+  });
+
+  document.querySelectorAll("[maxlength]").forEach((element) => {
+    element.addEventListener("change", (event) => {
+      let val = parseInt(element.value, 16);
+      if (isNaN(val)) { val = 0; }
+      element.value = val.toString(16).padStart(element.maxLength, "0");
+    });
+  });
+
+  document.querySelector("#send").addEventListener("click", (event) => {
+    let id = parseInt(document.querySelector("#id").value, 16);
+    let dlc = parseInt(document.querySelector("#dlc").value);
+    let data = [];
+    for (i = 0; i < dlc; i++) {
+      data.push(parseInt(document.querySelector(`#d${i}`).value, 16));
+    }
+    let msg = new CanMessage(id, data);
+    ws.send(msg);
+  });
+});
+</script>
+</body>
+</head>
+</html>
