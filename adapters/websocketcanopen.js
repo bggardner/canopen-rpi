@@ -167,6 +167,25 @@ class CanOpenSdoDownloadInitiateRequest extends CanOpenSdoInitiateMixIn(CanOpenS
   }
 }
 
+class CanOpenSdoDownloadSegmentRequest extends CanOpenSdoSegmentMixIn(CanOpenSdoRequest) {
+  constructor(nodeId, t, sdoData) {
+    let sdoHeader = CanOpenSdoMessage.CCS_DOWNLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
+    sdoHeader += t << CanOpenSdoSegmentMixIn.T_BITNUM;
+    sdoHeader += n << CanOpenSdoSegmentMixIn.N_BITNUM;
+    sdoHeader += c << CanOpenSdoSegmentMixIn.C_BITNUM;
+    super(nodeId, sdoHeader, sdoData);
+  }
+}
+
+class CanOpenSdoDownloadSegmentResponse extends CanOpenSdoSegmentMixIn(CanOpenSdoResponse) {
+  constructor(nodeId, t) {
+    let sdoHeader = CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
+    sdoHeader += t << CanOpenSdoDownloadSegmentResponse.T_BITNUM;
+    let sdoData = Array(7).fill(0x00);
+    super(nodeId, sdoHeader, sdoData);
+  }
+}
+
 class CanOpenSdoDownloadInitiateResponse extends CanOpenSdoInitiateMixIn(CanOpenSdoResponse) {
   constructor(nodeId, index, subIndex) {
     let sdoHeader = CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE << CanOpenSdoMessage.CS_BITNUM;
@@ -195,6 +214,79 @@ class CanOpenSdoUploadInitiateResponse extends CanOpenSdoInitiateMixIn(CanOpenSd
     sdoData.push((data >> 16) & 0xFF);
     sdoData.push((data >> 24) & 0xFF);
     super(nodeId, sdoHeader, sdoData);
+  }
+}
+
+class CanOpenSdoUploadSegmentRequest extends CanOpenSdoSegmentMixIn(CanOpenSdoRequest) {
+  constructor(nodeId, t) {
+    let sdoHeader = CanOpenSdoMessage.CCS_UPLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
+    sdoHeader += t << CanOpenSdoUploadSegmentRequest.T_BITNUM;
+    let sdoData = Array(7).fill(0x00);
+    super(nodeId, sdoHeader, sdoData);
+  }
+}
+
+class CanOpenSdoUploadSegmentResponse extends CanOpenSdoSegmentMixIn(CanOpenSdoResponse) {
+  constructor(nodeId, t, n, c, sdoData) {
+    let sdoHeader = CanOpenSdoMessage.SCS_UPLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
+    sdoHeader += t << CanOpenSdoSegmentMixIn.T_BITNUM;
+    sdoHeader += n << CanOpenSdoSegmentMixIn.N_BITNUM;
+    sdoHeader += c << CanOpenSdoSegmentMixIn.C_BITNUM;
+    super(nodeId, sdoHeader, sdoData);
+  }
+}
+
+class CanOpenTimeOfDay {
+  static get EPOCH() { return new Date("01 Jan 1984 00:00:00 GMT"); }
+
+  constructor(days, milliseconds) {
+     this.days = days;
+     this.milliseconds = milliseconds;
+  }
+
+  [Symbol.iterator]() {
+    let tod = this;
+    return {
+      next() {
+        switch(this._cursor++) {
+          case 0: return {value: tod.milliseconds && 0xFF, done: false};
+          case 1: return {value: (tod.milliseconds >> 8) & 0xFF, done: false};
+          case 2: return {value: (tod.milliseconds >> 16) & 0xFF,done: false};
+          case 3: return {value: tod.milliseconds >> 24, done: false};
+          case 4: return {value: tod.days & 0xFF, done: false};
+          case 5: return {value: tod.days >> 8, done: false};
+          case 6:
+            this._cursor = 0;
+            return {done: true};
+          default:
+        }
+      },
+      _cursor: 0
+    }
+  }
+
+  toDate() {
+    let d = CanOpenTimeOfDay.EPOCH;
+    d.setDate(d.getDate() + this.days);
+    d.setMilliseconds(this.milliseconds);
+    return d;
+  }
+
+  static from(byteArray) {
+    let milliseconds = byteArray[0];
+    milliseconds += byteArray[1] << 8;
+    milliseconds += byteArray[2] << 16;
+    milliseconds += (byteArray[3] & 0x0F) << 24;
+    let days = byteArray[4];
+    days += byteArray[5] << 8;
+    return new this(days, milliseconds);
+  }
+
+  static fromDate(d) {
+    let milliseconds = (d - this.EPOCH);
+    let days = Math.floor(milliseconds / 1000 / 3600 / 24);
+    milliseconds -= days * 24 * 3600 * 1000;
+    return new this(days, milliseconds);
   }
 }
 
