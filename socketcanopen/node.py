@@ -753,7 +753,7 @@ class Node:
                         self._send(msg)
                 for index in range(0x1280, 0x1300):
                     if index in self.od:
-                        sdo_client_rx_cob_id = self.od.get(index).get(ODSI_CLIENT_RX)
+                        sdo_client_rx_cob_id = self.od.get(index).get(ODSI_SDO_CLIENT_RX)
                         sdo_server_can_id = sdo_client_rx_cob_id & 0x1FFFFFFF
                         if ((sdo_client_rx_cob_id & 0x8000) == 0) and can_id == sdo_server_can_id and sdo_server_can_id in self._sdo_requests:
                             self._sdo_requests[sdo_server_can_id] = data
