@@ -62,14 +62,26 @@ class WebSocketCan extends WebSocket {
   constructor(url) {
     super(url);
     this.binaryType = "arraybuffer";
+    this._messageListeners = [];
   }
 
   addEventListener(type, listener, useCapture, wantsUntrusted) {
-    let wrapper = listener;
     if (type == "message") {
-      wrapper = this._messageHandler(listener);
+      if (!this._messageListeners.includes(listener)) {
+        this._messageListeners.push(listener);
+      }
+      listener = this._messageHandler;
     }
-    super.addEventListener(type, wrapper, useCapture, wantsUntrusted);
+    super.addEventListener(type, listener, useCapture, wantsUntrusted);
+  }
+
+  removeEventListener(type, listener, useCapture) {
+    if (type == "message") {
+      this._messageListeners.splice(this._messageListeners.indexOf(listener), 1);
+      listener = this._messageHandler;
+      if (this._messageListeners.length) { return; }
+    }
+    super.removeEventListener(type, listener, useCapture);
   }
 
   set onmessage(handler) {
@@ -81,11 +93,21 @@ class WebSocketCan extends WebSocket {
     super.send(byteArray.buffer);
   }
 
-  _messageHandler(handler) {
-    return function(event) {
-      let init = Object.assign({}, event);
-      init.data = CanMessage.from(new Uint8Array(event.data));
-      handler(new MessageEvent(event.type, init));
+  _messageHandler(event) {
+    let init = Object.assign({}, event);
+    init.data = CanMessage.from(new Uint8Array(event.data));
+    event = new MessageEvent(event.type, init);
+    this._handleMessageEvent(event);
+  }
+
+  _handleMessageEvent(event) {
+    for (let i = 0; i < this._messageListeners.length; i++) {
+      let listener = this._messageListeners[i];
+      if (typeof listener.handleEvent != 'undefined') {
+        listener.handleEvent(event);
+      } else {
+        listener.call(this, event);
+      }
     }
   }
 }

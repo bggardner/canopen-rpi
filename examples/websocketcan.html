@@ -44,21 +44,20 @@ button {
 <button id="send" disabled>Send</button><br>
 <label for="monitor">Traffic</label><input id="monitor" type="text" style="width: 100%;" disabled>
 <script>
-let ws;
 window.addEventListener("DOMContentLoaded", (event) => {
+  let ws;
   document.querySelector("#connect").addEventListener("click", (event) => {
-    let url = document.querySelector("#url");
-    let wsUrl = url.value;
-    let wsRe = /wss?:\/\/[0-9a-z]+(:[0-9]+)?/i;
-    if (!wsRe.test(wsUrl)) {
-      alert("Invalid URL");
-      return;
-    }
-    url.disabled = true;
     let connectButton = document.querySelector("#connect");
-    connectButton.disabled = true;
-    connectButton.innerHTML = "Connecting...";
-    if (connectButton.innerHTML == "Connecting...") {
+    if (connectButton.innerHTML == "Connect") {
+      let url = document.querySelector("#url");
+      let wsUrl = url.value;
+      let wsRe = /wss?:\/\/[0-9a-z]+(:[0-9]+)?/i;
+      if (!wsRe.test(wsUrl)) {
+        alert("Invalid URL");
+        return;
+      }
+      url.disabled = true;
+      connectButton.innerHTML = "Connecting...";
       ws = new WebSocketCan(wsUrl); // extends WebSocket
       ws.addEventListener("error", (event) => {
         alert("Connection error");
@@ -75,16 +74,17 @@ window.addEventListener("DOMContentLoaded", (event) => {
         connectButton.disabled = false;
       });
       ws.addEventListener("message", (event) => {
-        console.log(event);
         let msg = event.data; // CanMessage object
-        console.log(msg);
-        let msgStr = event.timeStamp.toString() + " " + msg.arbitrationId.toString(16).padStart(3, "0") + "#";
+        let msgStr = event.timeStamp.toString() + "ms: " + msg.arbitrationId.toString(16).padStart(3, "0") + "#";
         for (let i = 0; i < msg.data.length; i++) {
           msgStr += msg.data[i].toString(16).padStart(2, "0");
         }
         document.querySelector("#monitor").value = msgStr;
       });
-    } else if (connectButton.innerHTML == "Disconnect") {
+    } else {
+      document.querySelector("#send").disabled = true;
+      connectButton.disabled = true;
+      connectButton.innerHTML = "Disconnecting...";
       ws.close(1000);
     }
   });

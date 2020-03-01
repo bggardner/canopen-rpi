@@ -1,10 +1,165 @@
 class WebSocketCanOpen extends WebSocketCan {
-  messageHandler(handler) {
-    return function(event) {
-      let init = Object.assign({}, event);
-      init.data = CanOpenMessage.from(new Uint8Array(event.data));
-      handler(new MessageEvent(event.type, init));
+  _messageHandler(event) {
+    let init = Object.assign({}, event);
+    init.data = CanOpenMessage.from(new Uint8Array(event.data));
+    event = new MessageEvent(event.type, init);
+    this._handleMessageEvent(event);
+  }
+}
+
+class CanOpenSdoClient extends EventTarget {
+  constructor(ws, timeout=2000) {
+    super();
+    if (!(ws instanceof WebSocket)) { throw "Websocket is required"; }
+    if (ws.readyState != WebSocket.OPEN) { throw "Websocket is not open"; }
+    this.ws = ws;
+    this.timeout = timeout;
+    this.ws.addEventListener("error", event => { this.abort(CanOpenSdoAbortRequest.ABORT_CONNECTION); }, {once: true});
+    this.ws.addEventListener("close", event => { this.abort(CanOpenSdoAbortRequest.ABORT_CONNECTION); }, {once: true});
+    this._listener = this._recv.bind(this);
+  }
+
+  _end(event) {
+    delete this.transaction;
+    if (this.ws.readyState == WebSocket.OPEN) {
+      this.ws.removeEventListener("message", this._listener);
     }
+    this.dispatchEvent(event);
+  }
+
+  _recv(event) {
+    let msg = event.data;
+    if (!(this.hasOwnProperty("transaction")) || msg.functionCode != CanOpenMessage.FUNCTION_CODE_SDO_TX || this.transaction.nodeId != msg.nodeId) { return; }
+    let scs = msg.data[0] >> CanOpenSdoMessage.CS_BITNUM;
+    if (scs == CanOpenSdoMessage.CS_ABORT) { return this._end(new CustomEvent("abort", {detail: new Uint32Array(msg.data.slice(4, 8).buffer)[0]})); }
+    // TODO: Repeated normal transactions result in duplicate CanOpenSdoMessage.SCS_*_INITIATE receptions causing the abort in the line below
+    // Suspected this.ws.removeEventListener("message", this._listener) is not working, however only two receptions are triggered instead of incrementing after each repeated transaction
+    if (scs != this.transaction.scs) { return this.abort(CanOpenSdoAbortRequest.ABORT_INVALID_CS); }
+    clearTimeout(this.transaction.timer);
+    let index, subIndex, n, e, s, data, t, c;
+    if (scs == CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE) {
+      index = new Uint16Array(msg.data.slice(1,3).buffer)[0];
+      subIndex = msg.data[3];
+      if (this.transaction.index != index || this.transaction.subIndex != subIndex) { return this.abort(); }
+      if (this.transaction.hasOwnProperty("data")) {
+        this.transaction.scs = CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT;
+        this.transaction.toggle = 0;
+        if (this.transaction.data.length > 7) {
+          n = 0;
+          c = 0;
+        } else {
+          n = 7 - this.transaction.data.length;
+          c = 1;
+        }
+        data = new Uint8Array(7);
+        data = data.set(this.transaction.data.slice(this.transaction.dataOffset, this.transaction.dataOffset + 7));
+        this._send(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
+      } else {
+        this._end(new CustomEvent("done", {detail: 0}));
+      }
+    } else if (scs == CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT) {
+      this.transaction.toggle ^= 1;
+      this.transaction.dataOffset += 7;
+      if (this.transaction.data.length > this.transaction.dataOffset + 7) {
+        n = 0;
+        c = 0;
+      } else {
+        n = 7 - this.transaction.data.length;
+        c = 1;
+      }
+      data = new Uint8Array(7);
+      data = data.set(this.transaction.data.slice(this.transaction.dataOffset, this.transaction.dataOffset + 7));
+      this._send(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
+    } else if (scs == CanOpenSdoMessage.SCS_UPLOAD_INITIATE) {
+      index = new Uint16Array(msg.data.slice(1,3).buffer)[0];
+      subIndex = msg.data[3];
+      if (this.transaction.index != index || this.transaction.subIndex != subIndex) { return this.abort(); }
+      s = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.S_BITNUM) & 0x1;
+      n = 0;
+      if (s) { n = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.N_BITNUM) & 0x3; }
+      e = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.E_BITNUM) & 0x1;
+      data = new Uint8Array(4);
+      data.set(msg.data.slice(4, 8 - n));
+      data = new Uint32Array(data.buffer)[0];
+      if (e) {
+        this._end(new CustomEvent("done", {detail: data}));
+      } else {
+        this.transaction.scs = CanOpenSdoMessage.SCS_UPLOAD_SEGMENT;
+        this.transaction.toggle = 0;
+        this.transaction.data = new Uint8Array(data);
+        this.transaction.dataOffset = 0;
+        this._send(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
+      }
+    } else if (scs == CanOpenSdoMessage.SCS_UPLOAD_SEGMENT) {
+      t = (msg.data[0] >> CanOpenSdoUploadSegmentResponse.T_BITNUM) & 0x1;
+      if (t != this.transaction.toggle) { return this.abort(CanOpenSdoAbortRequest.ABORT_TOGGLE); }
+      n = (msg.data[0] >> CanOpenSdoUploadSegmentResponse.N_BITNUM) & 0x7;
+      this.transaction.data.set(msg.data.slice(1, 8 - n), this.transaction.dataOffset);
+      c = (msg.data[0] >> CanOpenSdoUploadSegmentResponse.C_BITNUM) & 0x1;
+      if (c) {
+        this._end(new CustomEvent("done", {detail: this.transaction.data}));
+      } else {
+        this.transaction.dataOffset += 7 - n;
+        this.transaction.toggle ^= 1;
+        this._send(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
+      }
+    }
+  }
+
+  _send(msg) {
+    this.transaction.timer = setTimeout(() => this.abort(CanOpenSdoAbortRequest.ABORT_TIMEOUT), this.timeout);
+    if (this.ws.readyState == WebSocket.OPEN) {
+      this.ws.send(msg);
+    } else {
+      delete this.transaction;
+      return this.abort(CanOpenSdoAbortRequest.ABORT_CONNECTION);
+    }
+  }
+
+  _start(msg) {
+    return new Promise((resolve, reject) => {
+      this.addEventListener("done", event => { resolve(event.detail); }, {once: true});
+      this.addEventListener("abort", event => { reject(event.detail); }, {once: true});
+      this.ws.addEventListener("message", this._listener);
+      this._send(msg);
+    });
+  }
+
+  abort(code=CanOpenSdoAbortRequest.ABORT_GENERAL) {
+    if (this.hasOwnProperty("transaction")) {
+      clearTimeout(this.transaction.timer);
+      if (this.ws.readyState == WebSocket.OPEN) {
+        this.ws.send(new CanOpenSdoAbortRequest(this.transaction.nodeId, this.transaction.index, this.transaction.subIndex, code));
+      } else {
+        code = CanOpenSdoAbortRequest.ABORT_CONNECTION;
+      }
+    }
+    this._end(new CustomEvent("abort", {detail: code}));
+  }
+
+  download(nodeId, n, e, s, index, subIndex, data) {
+    this.transaction = {
+      nodeId: nodeId,
+      scs: CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE,
+      index: index,
+      subIndex: subIndex
+    }
+    if (!e) {
+      if (!(data instanceof Uint8Array)) { throw "Normal SDO data must be of type Uint8Array"; }
+      this.transaction.data = data;
+      this.transaction.dataOffset = 0;
+    }
+    return this._start(new CanOpenSdoDownloadInitiateRequest(nodeId, n, e, s, index, subIndex, data));
+  }
+
+  upload(nodeId, index, subIndex=0) {
+    this.transaction = {
+      nodeId: nodeId,
+      scs: CanOpenSdoMessage.SCS_UPLOAD_INITIATE,
+      index: index,
+      subIndex: subIndex
+    }
+    return this._start(new CanOpenSdoUploadInitiateRequest(nodeId, index, subIndex));
   }
 }
 
@@ -131,16 +286,18 @@ class CanOpenSdoResponse extends CanOpenSdoMessage {
   }
 }
 
-class CanOpenSdoAbortResponse extends CanOpenSdoResponse {
-
+const CanOpenSdoAbortMixIn = superclass => class extends superclass {
   // Abort codes
+  static get ABORT_TOGGLE() { return 0x05030000; }
+  static get ABORT_TIMEOUT() { return 0x05040000; }
   static get ABORT_INVALID_CS() { return 0x05040001; }
   static get ABORT_WO() { return 0x06010001; }
   static get ABORT_RO() { return 0x06010002; }
   static get ABORT_OBJECT_DNE() { return 0x06020000; }
   static get ABORT_SUBINDEX_DNE() { return 0x06090011; }
+  static get ABORT_CONNECTION() { return 0x060A0023; }
   static get ABORT_GENERAL() { return 0x08000000; }
-  
+
   constructor(nodeId, index, subIndex, abortCode) {
     let sdoHeader = CanOpenSdoMessage.CS_ABORT << CanOpenSdoMessage.CS_BITNUM;
     let sdoData = [index & 0xFF, index >> 8, subIndex];
@@ -151,6 +308,10 @@ class CanOpenSdoAbortResponse extends CanOpenSdoResponse {
     super(nodeId, sdoHeader, sdoData);
   }
 }
+
+class CanOpenSdoAbortRequest extends CanOpenSdoAbortMixIn(CanOpenSdoRequest) {}
+
+class CanOpenSdoAbortResponse extends CanOpenSdoAbortMixIn(CanOpenSdoResponse) {}
 
 class CanOpenSdoDownloadInitiateRequest extends CanOpenSdoInitiateMixIn(CanOpenSdoRequest) {
   constructor(nodeId, n, e, s, index, subIndex, data) {

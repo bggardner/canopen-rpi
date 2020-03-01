@@ -735,8 +735,16 @@ class Node:
                                     self._sdo_t = None
                                     c = 1
                                 data = struct.pack("<B{}s".format(len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
+                            elif ccs == SDO_CS_ABORT:
+                                logger.info("SDO aborted.")
+                                self._sdo_data = None
+                                self._sdo_len = None
+                                self._sdo_t = None
+                                self._sdo_odi = None
+                                self._sdo_odsi = None
+                                return
                             else:
-                                logger.error("SDO Request aborted, invalid cs")
+                                logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
                                 raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_CS)
                         except SdoAbort as a:
                             self._sdo_data = None

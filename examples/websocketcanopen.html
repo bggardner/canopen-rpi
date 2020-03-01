@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>WebSocketCANopen</title>
+<script src="../adapters/websocketcan.js"></script>
+<script src="../adapters/websocketcanopen.js"></script>
+<style>
+body {
+  font-family: Arial, Verdana, sans-serif;
+}
+input {
+  border: 1px solid #aaaa;
+  border-radius: 0.25rem;
+  font-size: 1rem;
+  padding: 0.25rem;
+}
+label { text-align: right; }
+label:after { content: ":"; }
+button {
+  cursor: pointer;
+  font-size: 1rem;
+  border-radius: 0.25rem;
+  padding: 0.25rem;
+}
+#connect:disabled { cursor: wait; }
+</style>
+</head>
+<body>
+<label for="url">URL</label><input id="url" type="text" placeholder="ws://server:port"><button id="connect">Connect</button><br>
+<h2>SDO</h2><hr>
+<label>Handler</label><input type="radio" name="sdo-handler" value="manual" checked>Manual&nbsp;&nbsp;&nbsp;<input type="radio" name="sdo-handler" value="client">CanOpenSdoClient<br> 
+<label for="sdo-node-id">Node ID</label><input id="sdo-node-id" type="number" min="1" max="127" step="1"><br>
+<label for="sdo-index">Index</label><input id="sdo-index"><br>
+<label for="sdo-subindex">Sub-Index</label><input id="sdo-subindex"><br>
+<label>Type</label><input type="radio" name="sdo-type" value="upload" checked>Upload&nbsp;&nbsp;&nbsp;<input type="radio" name="sdo-type" value="download">Download<br> 
+<label for="sdo-value">Value</label><input id="sdo-value" disabled><br>
+<button id="sdo-send" class="send" disabled>Send</button><br>
+<label for="sdo-response">Response</label><span id="sdo-response"></span>
+<script>
+window.addEventListener("DOMContentLoaded", event => {
+  document.querySelectorAll('[name="sdo-type"]').forEach(element => {
+    element.addEventListener("change", event => {
+      if (element.value == "upload") {
+        document.querySelector("#sdo-value").disabled = true;
+      } else {
+        document.querySelector("#sdo-value").disabled = false;
+      }
+    });
+  });
+
+  let ws;
+  let sdoClient, sdoNodeId, sdoIndex, sdoSubIndex;
+  document.querySelector("#connect").addEventListener("click", (event) => {
+    let connectButton = document.querySelector("#connect");
+    if (connectButton.innerHTML == "Connect") {
+      let url = document.querySelector("#url");
+      let wsUrl = url.value;
+      let wsRe = /wss?:\/\/[0-9a-z]+(:[0-9]+)?/i;
+      if (!wsRe.test(wsUrl)) {
+        alert("Invalid URL");
+        return;
+      }
+      url.disabled = true;
+      connectButton.innerHTML = "Connecting...";
+      ws = new WebSocketCanOpen(wsUrl);
+      ws.addEventListener("error", (event) => {
+        alert("Connection error");
+      });
+      ws.addEventListener("open", (event) => {
+        document.querySelectorAll(".send").forEach(element => { element.disabled = false; });
+        connectButton.innerHTML = "Disconnect";
+        connectButton.disabled = false;
+      });
+      ws.addEventListener("close", (event) => {
+        document.querySelectorAll(".send").forEach(element => { element.disabled = false; });
+        url.disabled = false;
+        connectButton.innerHTML = "Connect";
+        connectButton.disabled = false;
+      });
+      ws.addEventListener("message", (event) => {
+        let msg = event.data;
+        switch (msg.functionCode) {
+          case CanOpenMessage.FUNCTION_CODE_NMT:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_SYNC:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_TIME:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_RPDO1:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_TPDO1:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_RPDO2:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_TPDO2:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_RPDO3:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_TPDO3:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_RPDO4:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_TPDO4:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_SDO_TX:
+            if (sdoClient != undefined) { break; }
+            if (msg.nodeId != sdoNodeId) { break; }
+            let cs = msg.data[0] >> CanOpenSdoMessage.CS_BITNUM;
+            switch (cs) {
+              case CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE:
+                document.querySelector("#sdo-response").innerHTML = "Download successful."
+                break;
+              case CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT:
+                break;
+              case CanOpenSdoMessage.SCS_UPLOAD_INITIATE:
+                let s = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.S_BITNUM) & 0x1;
+                let e = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.E_BITNUM) & 0x1;
+                let n = 0;
+                if (s) { n = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.N_BITNUM) & 0x3; }
+                document.querySelector("#sdo-value").value = new Uint32Array(new Uint8Array(msg.data.slice(4, 8)).buffer)[0];
+                if (e) {
+                  document.querySelector("#sdo-response").innerHTML = "Expedited upload successful.";
+                } else {
+                  document.querySelector("#sdo-response").innerHTML = "Normal upload successful.";
+                  ws.send(new CanOpenSdoAbortRequest(sdoNodeId, sdoIndex, sdoSubIndex, CanOpenSdoAbortRequest.ABORT_GENERAL));
+                }
+                break;
+              case CanOpenSdoMessage.SCS_UPLOAD_SEGMENT:
+                break;
+              case CanOpenSdoMessage.CS_ABORT:
+                document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + new Uint32Array(msg.data.slice(4, 8).buffer).toString(16).padStart(8, "0");
+                break;
+              default:
+            }
+            break;
+          case CanOpenMessage.FUNCTION_CODE_SDO_RX:
+            break;
+          case CanOpenMessage.FUNCTION_CODE_NMT_ERROR_CONTROL:
+            break;
+          default:
+        }
+      });
+    } else {
+      document.querySelectorAll(".send").forEach(element => { element.disabled = false; });
+      connectButton.disabled = true;
+      connectButton.innerHTML = "Disconnecting...";
+      ws.close(1000);
+    }
+  });
+
+  document.querySelector("#sdo-send").addEventListener("click", (event) => {
+    sdoNodeId = parseInt(document.querySelector("#sdo-node-id").value);
+    sdoIndex = parseInt(document.querySelector("#sdo-index").value);
+    sdoSubIndex = parseInt(document.querySelector("#sdo-subindex").value);
+    if (document.querySelector('[name="sdo-handler"][value="manual"]').checked) {
+      let msg;
+      if (document.querySelector("#sdo-value").disabled) {
+          msg = new CanOpenSdoUploadInitiateRequest(sdoNodeId, sdoIndex, sdoSubIndex);
+      } else {
+          msg = new CanOpenSdoDownloadInitiateRequest(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, parseInt(document.querySelector("#sdo-value").value));
+      }
+      ws.send(msg);
+    } else {
+      sdoClient = new CanOpenSdoClient(ws);
+      if (document.querySelector("#sdo-value").disabled) {
+        sdoClient.upload(sdoNodeId, sdoIndex, sdoSubIndex).then(response => {
+          document.querySelector("#sdo-value").value = response;
+          document.querySelector("#sdo-response").innerHTML = "Upload successful.";
+          sdoClient = undefined;
+        }).catch(error => {
+          document.querySelector("#sdo-value").value = response;
+          document.querySelector("#sdo-response").innerHTML = "Abort received.";      
+          sdoClient = undefined;
+        });
+      } else {
+        sdoClient.download(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, parseInt(document.querySelector("#sdo-value").value)).then(response => {
+          document.querySelector("#sdo-response").innerHTML = "Download successful.";
+          sdoClient = undefined;
+        }).catch(error => {
+          document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + error.toString(16).padStart(8, "0");
+          sdoClient = undefined;
+        });
+      }
+    }
+  });
+});
+</script>
+</body>
+</head>
+</html>
