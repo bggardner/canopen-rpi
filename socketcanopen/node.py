@@ -2,6 +2,7 @@
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
 # TODO: Check for BUS-OFF before attempting to send
 # TODO: NMT error handler (CiA302-2)
+from binascii import crc_hqx
 from datetime import datetime, timedelta
 import logging
 import math
@@ -106,13 +107,15 @@ class Node:
         self._nmt_multiple_master_timer = None
         self._nmt_slave_booters = {}
         self._pending_emcy_msgs = []
+        self._sdo_cs = None
         self._sdo_data = None
         self._sdo_data_type = None
         self._sdo_len = None
-        self._sdo_t = None
         self._sdo_odi = None
         self._sdo_odsi = None
         self._sdo_requests = {}
+        self._sdo_seqno = 0
+        self._sdo_t = None
         self._sync_counter = 0
         self._sync_timer = None
         self._timedelta = timedelta()
@@ -590,163 +593,339 @@ class Node:
                     if sdo_server_csid is not None and (sdo_server_csid.value & 0x1FFFFFFF) == can_id:
                         try:
                             ccs = (data[0] & SDO_CS_MASK) >> SDO_CS_BITNUM
-                            if ccs in [SDO_CCS_DOWNLOAD_INITIATE, SDO_CCS_UPLOAD_INITIATE]:
-                                odi = (data[2] << 8) + data[1]
-                                odsi = data[3]
-                                if odi in self.od:
-                                    obj = self.od.get(odi)
-                                    if odsi in obj:
-                                        subobj = obj.get(odsi)
+                            if self._sdo_cs == SDO_SCS_BLOCK_DOWNLOAD and self._sdo_seqno > 0:
+                                logger.info("SDO block download sub-block for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                c = data[0] >> 7
+                                seqno = data[0] & 0x7F
+                                if self._sdo_seqno != seqno:
+                                    if self._sdo_seqno > 1:
+                                        raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_INVALID_SEQNO)
                                     else:
-                                        raise SdoAbort(odi, odsi, SDO_ABORT_SUBINDEX_DNE)
+                                        ackseq = 0
                                 else:
-                                    raise SdoAbort(odi, odsi, SDO_ABORT_OBJECT_DNE)
-                            if ccs == SDO_CCS_DOWNLOAD_INITIATE:
-                                if subobj.access_type in [AccessType.RO, AccessType.CONST]:
-                                    raise SdoAbort(odi, odsi, SDO_ABORT_RO)
-                                scs = SDO_SCS_DOWNLOAD_INITIATE
-                                s = (data[0] >> SDO_S_BITNUM) & 1
-                                e = (data[0] >> SDO_E_BITNUM) & 1
-                                data_type_index = subobj.data_type
-                                if e == 1 and s == 1:
-                                    n = (data[0] & SDO_INITIATE_N_MASK) >> SDO_INITIATE_N_BITNUM
-                                    subobj.value = subobj.from_bytes(data[4:8-n])
-                                elif e == 1 and s == 0:
-                                    n = 0 # Unspecified number of bytes, default to all
+                                    self._sdo_data += data[1:8]
+                                    ackseq = seqno
+                                    if c == 1:
+                                        self._sdo_seqno = 0
+                                    elif self._sdo_seqno == self._sdo_len:
+                                        self._sdo_seqno = 1
+                                    else:
+                                        self._sdo_seqno += 1
+                                        return
+                                blksize = 127
+                                data = struct.pack("<BBB5x", (SDO_SCS_BLOCK_DOWNLOAD << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_RESPONSE, ackseq, blksize)
+                            else:
+                                if ccs in [SDO_CCS_DOWNLOAD_INITIATE, SDO_CCS_UPLOAD_INITIATE] or (ccs == SDO_CCS_BLOCK_DOWNLOAD and (data[0] & 0x1) == SDO_BLOCK_SUBCOMMAND_INITIATE) or (ccs == SDO_CCS_BLOCK_UPLOAD and (data[0] & 0x03) == SDO_BLOCK_SUBCOMMAND_INITIATE):
+                                    odi = (data[2] << 8) + data[1]
+                                    odsi = data[3]
+                                    if odi in self.od:
+                                        obj = self.od.get(odi)
+                                        if odsi in obj:
+                                            subobj = obj.get(odsi)
+                                        else:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_SUBINDEX_DNE)
+                                    else:
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_OBJECT_DNE)
+                                if ccs == SDO_CS_ABORT:
+                                    logger.info("SDO aborted.")
+                                    self._sdo_cs = None
+                                    self._sdo_data = None
+                                    self._sdo_len = None
+                                    self._sdo_odi = None
+                                    self._sdo_odsi = None
+                                    self._sdo_seqno = 0
+                                    self._sdo_t = None
+                                    return
+                                elif ccs == SDO_CCS_DOWNLOAD_INITIATE:
+                                    if subobj.access_type in [AccessType.RO, AccessType.CONST]:
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_RO)
+                                    scs = SDO_SCS_DOWNLOAD_INITIATE
+                                    s = (data[0] >> SDO_S_BITNUM) & 1
+                                    e = (data[0] >> SDO_E_BITNUM) & 1
+                                    data_type_index = subobj.data_type
+                                    if e == 1 and s == 1:
+                                        n = (data[0] & SDO_INITIATE_N_MASK) >> SDO_INITIATE_N_BITNUM
+                                        subobj.value = subobj.from_bytes(data[4:8-n])
+                                    elif e == 1 and s == 0:
+                                        n = 0 # Unspecified number of bytes, default to all
+                                        if data_type_index in self.od:
+                                            data_type_object = self.od.get(data_type_index)
+                                            if ODSI_VALUE in data_type_object:
+                                                n = 4 - max(1, data_type_object.get(ODSI_VALUE).value // 8)
+                                        subobj.value = subobj.from_bytes(data[4:8-n])
+                                    elif e == 0 and s == 1: # Normal (non-expedited) SDO
+                                        self._sdo_odi = odi
+                                        self._sdo_odsi = odsi
+                                        self._sdo_t = 0
+                                        self._sdo_len = int.from_bytes(data[4:8], byteorder="little")
+                                        self._sdo_data = []
+                                        self._sdo_data_type = data_type_index
+                                    else: # e == 0, s == 0 is reserved
+                                        logger.error("SDO Download Initiate Request with e=0 & s=0 aborted")
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
+                                    if e == 1: # Handle special cases
+                                        if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
+                                        if odi == ODI_REQUEST_NMT:
+                                            if not self.is_active_nmt_master:
+                                                logger.error("SDO Download to NMT Request aborted; device is not active NMT master")
+                                                raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
+                                            target_node = odsi & 0x7F
+                                            if (subobj.value & 0x7F) == 0x04: # Stop remote node
+                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_STOP, target_node))
+                                            elif (subobj.value & 0x7F) == 0x05: # Start remote node
+                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, target_node))
+                                            elif (subobj.value & 0x7F) == 0x06: # Reset node
+                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_NODE, target_node))
+                                            elif (subobj.value & 0x7F) == 0x06: # Reset communication
+                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, target_node))
+                                            elif (subobj.value & 0x7F) == 0x06: # Enter preoperational
+                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_PREOPERATIONAL, target_node))
+                                            else:
+                                                raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
+                                    obj.update({odsi: subobj}) # TODO: Don't update for some special cases (above)
+                                    self.od.update({odi: obj})
+                                    self._process_timers() # Update timers since OD was modified
+                                    data = struct.pack("<BHB4x", scs << SDO_CS_BITNUM, odi, odsi)
+                                elif ccs == SDO_CCS_DOWNLOAD_SEGMENT:
+                                    if self._sdo_data is None:
+                                        logger.error("SDO Download Segment Request aborted, initate not received or aborted")
+                                        raise SdoAbort(0, 0, SDO_INVALID_CS) # Initiate not receieved or aborted
+                                    scs = SDO_SCS_DOWNLOAD_SEGMENT
+                                    t = (data[0] >> SDO_T_BITNUM) & 1
+                                    if self._sdo_t != t:
+                                        raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_TOGGLE)
+                                    self._sdo_t = t ^ 1
+                                    n = (data[0] & SDO_SEGMENT_N_MASK) >> SDO_SEGMENT_N_BITNUM
+                                    self._sdo_data += data[1:8-n]
+                                    c = (data[0] >> SDO_C_BITNUM) & 1
+                                    if c == 1:
+                                        obj = self.od.get(self._sdo_odi)
+                                        subobj = obj.get(self._sdo_odsi)
+                                        subobj.value = subobj.from_bytes(self._sdo_data)
+                                        obj.update({self._sdo_odsi: subobj})
+                                        self.od.update({self._sdo_odi: obj})
+                                        self._process_timers() # Update timers since OD was modified
+                                        self._sdo_data = None
+                                        self._sdo_data_type = None
+                                        self._sdo_len = None
+                                        self._sdo_odi = None
+                                        self._sdo_odsi = None
+                                        self._sdo_t = None
+                                    data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM))
+                                elif ccs == SDO_CCS_UPLOAD_INITIATE:
+                                    if subobj.access_type == AccessType.WO:
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_WO)
+                                    if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
+                                        raise SdoAbort(odi, odsi, SDO_ABORT_NO_DATA)
+                                    scs = SDO_SCS_UPLOAD_INITIATE
+                                    data_type_index = subobj.data_type
+                                    data_type_length = None
                                     if data_type_index in self.od:
                                         data_type_object = self.od.get(data_type_index)
                                         if ODSI_VALUE in data_type_object:
-                                            n = 4 - max(1, data_type_object.get(ODSI_VALUE).value // 8)
-                                    subobj.value = subobj.from_bytes(data[4:8-n])
-                                elif e == 0 and s == 1: # Normal (non-expedited) SDO
-                                    self._sdo_odi = odi
-                                    self._sdo_odsi = odsi
-                                    self._sdo_t = 0
-                                    self._sdo_len = int.from_bytes(data[4:8], byteorder='little')
-                                    self._sdo_data = []
-                                    self._sdo_data_type = data_type_index
-                                else: # e == 0, s == 0 is reserved
-                                    logger.error("SDO Download Initiate Request with e=0 & s=0 aborted")
-                                    raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
-                                if e == 1: # Handle special cases
-                                    if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
-                                        raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
-                                    if odi == ODI_REQUEST_NMT:
-                                        if not self.is_active_nmt_master:
-                                            logger.error("SDO Download to NMT Request aborted; device is not active NMT master")
-                                            raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
-                                        target_node = odsi & 0x7F
-                                        if (subobj.value & 0x7F) == 0x04: # Stop remote node
-                                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_STOP, target_node))
-                                        elif (subobj.value & 0x7F) == 0x05: # Start remote node
-                                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, target_node))
-                                        elif (subobj.value & 0x7F) == 0x06: # Reset node
-                                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_NODE, target_node))
-                                        elif (subobj.value & 0x7F) == 0x06: # Reset communication
-                                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, target_node))
-                                        elif (subobj.value & 0x7F) == 0x06: # Enter preoperational
-                                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_PREOPERATIONAL, target_node))
-                                        else:
-                                            raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
-                                obj.update({odsi: subobj}) # TODO: Don't update for some special cases (above)
-                                self.od.update({odi: obj})
-                                self._process_timers() # Update timers since OD was modified
-                                data = struct.pack("<BHB4x", scs << SDO_CS_BITNUM, odi, odsi)
-                            elif ccs == SDO_CCS_DOWNLOAD_SEGMENT:
-                                if self._sdo_data is None:
-                                    logger.error("SDO Download Segment Request aborted, initate not received or aborted")
-                                    raise SdoAbort(0, 0, SDO_ABORT_GENERAL) # Initiate not receieved or aborted
-                                scs = SDO_SCS_DOWNLOAD_SEGMENT
-                                t = (data[0] >> SDO_T_BITNUM) & 1
-                                if self._sdo_t != t:
-                                    raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_TOGGLE)
-                                self._sdo_t = t ^ 1
-                                n = (data[0] & SDO_SEGMENT_N_MASK) >> SDO_SEGMENT_N_BITNUM
-                                self._sdo_data += data[1:8-n]
-                                c = (data[0] >> SDO_C_BITNUM) & 1
-                                if c == 1:
-                                    obj = self.od.get(self._sdo_odi)
-                                    subobj = obj.get(self._sdo_odsi)
-                                    subobj.value = subobj.from_bytes(self._sdo_data)
-                                    obj.update({self._sdo_odsi: subobj})
-                                    self.od.update({self._sdo_odi: obj})
-                                    self._process_timers() # Update timers since OD was modified
-                                    self._sdo_data = None
-                                    self._sdo_data_type = None
-                                    self._sdo_len = None
-                                    self._sdo_t = None
-                                    self._sdo_odi = None
-                                    self._sdo_odsi = None
-                                data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM))
-                            elif ccs == SDO_CCS_UPLOAD_INITIATE:
-                                if subobj.access_type == AccessType.WO:
-                                    raise SdoAbort(odi, odsi, SDO_ABORT_WO)
-                                if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
-                                    raise SdoAbort(odi, odsi, SDO_ABORT_NO_DATA)
-                                scs = SDO_SCS_UPLOAD_INITIATE
-                                data_type_index = subobj.data_type
-                                data_type_length = None
-                                if data_type_index in self.od:
-                                    data_type_object = self.od.get(data_type_index)
-                                    if ODSI_VALUE in data_type_object:
                                             data_type_length = data_type_object.get(ODSI_VALUE).value // 8
-                                if data_type_length is None: # Unknown data length, default to expedited 4 bytes
-                                    n = 0
-                                    s = 0
-                                    e = 1
-                                    sdo_data = bytes(subobj)
-                                elif data_type_length > 4:
-                                    self._sdo_data = bytes(subobj)
-                                    self._sdo_len = data_type_length
-                                    self._sdo_t = 0
-                                    self._sdo_odi = odi
-                                    self._sdo_odsi = odsi
-                                    s = 1
-                                    e = 0
-                                    n = 0
-                                    sdo_data = struct.pack("<I", data_type_length)
+                                    if data_type_length is None: # Unknown data length, default to expedited 4 bytes
+                                        n = 0
+                                        s = 0
+                                        e = 1
+                                        sdo_data = bytes(subobj)
+                                    elif data_type_length > 4:
+                                        self._sdo_data = bytes(subobj)
+                                        self._sdo_len = data_type_length
+                                        self._sdo_t = 0
+                                        self._sdo_odi = odi
+                                        self._sdo_odsi = odsi
+                                        s = 1
+                                        e = 0
+                                        n = 0
+                                        sdo_data = struct.pack("<I", data_type_length)
+                                    else:
+                                        n = 4 - data_type_length
+                                        s = 1
+                                        e = 1
+                                        sdo_data = bytes(subobj)
+                                    data = struct.pack("<BHB4s", (scs << SDO_CS_BITNUM) + (n << SDO_INITIATE_N_BITNUM) + (e << SDO_E_BITNUM), odi, odsi, sdo_data)
+                                elif ccs == SDO_CCS_UPLOAD_SEGMENT:
+                                    if self._sdo_data is None:
+                                        logger.error("SDO upload initiate request aborted, initiate not received or aborted")
+                                        raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
+                                    scs = SDO_SCS_UPLOAD_SEGMENT
+                                    t = (data[0] >> SDO_T_BITNUM) & 1
+                                    if self._sdo_t != t:
+                                        raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_TOGGLE)
+                                    self._sdo_t = t ^ 1
+                                    if self._sdo_len > 7:
+                                        l = 7
+                                    else:
+                                        l = self._sdo_len
+                                    sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+l or None)]
+                                    self._sdo_len -= l
+                                    n = 7 - l
+                                    if self._sdo_len > 0:
+                                        c = 0
+                                    else:
+                                        self._sdo_data = None
+                                        self._sdo_len = None
+                                        self._sdo_t = None
+                                        c = 1
+                                    data = struct.pack("<B{}s".format(len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
+                                elif ccs == SDO_CCS_BLOCK_DOWNLOAD:
+                                    scs = SDO_SCS_BLOCK_DOWNLOAD
+                                    cs = data[0] & 0x01
+                                    if cs == SDO_BLOCK_SUBCOMMAND_INITIATE:
+                                        logger.info("SDO block download initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
+                                        if subobj.access_type in [AccessType.RO, AccessType.CONST]:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_RO)
+                                        if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_NO_DATA)
+                                        cc = (data[0] >> 2) & 0x01
+                                        s = (data[0] >> 1) & 0x01
+                                        if s == 1:
+                                            size = int.from_bytes(data[4:8], byteorder="little")
+                                            if size > 127:
+                                                blksize = 127
+                                            else:
+                                                blksize = size
+                                        else:
+                                            blksize = 127
+                                        sc = cc
+                                        self._sdo_cs = scs
+                                        self._sdo_data = []
+                                        self._sdo_len = blksize
+                                        self._sdo_odi = odi
+                                        self._sdo_odsi = odsi
+                                        self._sdo_seqno = 1
+                                        self._sdo_t = cc # CRC support
+                                        data = struct.pack("<BHBB3x", (scs << SDO_CS_BITNUM) + (sc << 2) + SDO_BLOCK_SUBCOMMAND_INITIATE, odi, odsi, blksize)
+                                    else: # SDO_BLOCK_SUBCOMMAND_END
+                                        if self._sdo_cs != SDO_SCS_BLOCK_DOWNLOAD:
+                                            raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS)
+                                        logger.info("SDO block download end request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        n = (data[0] >> 2) & 0x07
+                                        self._sdo_data = self._sdo_data[0:-n]
+                                        if self._sdo_t: # Check CRC
+                                            crc = struct.unpack("<H", data[1:3])
+                                            if crc != crc_hqx(self._sdo_data, 0):
+                                                raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_CRC_ERROR)
+                                        obj = self.od.get(self._sdo_odi)
+                                        subobj = obj.get(self._sdo_odsi)
+                                        subobj.value = subobj.from_bytes(self._sdo_data)
+                                        obj.update({self._sdo_odsi: subobj})
+                                        self.od.update({self._sdo_odi: obj})
+                                        self._process_timers() # Update timers since OD was modified
+                                        self._sdo_cs = None
+                                        self._sdo_data = None
+                                        self._sdo_len = None
+                                        self._sdo_odi = None
+                                        self._sdo_odsi = None
+                                        self._sdo_seqno = 0
+                                        self._sdo_t = None
+                                        data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_END)
+                                elif ccs == SDO_CCS_BLOCK_UPLOAD:
+                                    cs = data[0] & 0x03
+                                    if cs == SDO_BLOCK_SUBCOMMAND_INITIATE:
+                                        cc = (data[0] >> 2) & 0x01
+                                        blksize = data[4]
+                                        if blksize == 0 or blksize >= 128:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_BLKSIZE)
+                                        pst = data[5] # TODO: Support protocol switching
+                                        sc = cc # CRC support
+                                        data_type_index = subobj.data_type
+                                        data_type_length = None # Maybe use len(bytes(subobj))?
+                                        if data_type_index in self.od:
+                                            data_type_object = self.od.get(data_type_index)
+                                            if ODSI_VALUE in data_type_object:
+                                                data_type_length = data_type_object.get(ODSI_VALUE).value // 8
+                                        if data_type_length is None:
+                                            s = 0
+                                            size = 0
+                                        else:
+                                            s = 1
+                                            size = data_type_length
+                                        scs = SDO_SCS_BLOCK_UPLOAD
+                                        self._sdo_cs = scs
+                                        self._sdo_data = bytes(subobj)
+                                        self._sdo_len = blksize
+                                        self._sdo_odi = odi
+                                        self._sdo_odsi = odsi
+                                        logger.info("SDO block upload initiate request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        data = struct.pack("<BHBI", (scs << SDO_CS_BITNUM) + (sc << 2) + (s << 1) + SDO_BLOCK_SUBCOMMAND_INITIATE, self._sdo_odi, self._sdo_odsi, size)
+                                    elif cs == SDO_BLOCK_SUBCOMMAND_START:
+                                        if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
+                                            raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
+                                        logger.info("SDO block upload start request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        self._sdo_seqno = 1
+                                        data_len = len(self._sdo_data)
+                                        while data_len > 0 and self._sdo_seqno <= self._sdo_len:
+                                            if data_len > 7:
+                                                c = 0
+                                            else:
+                                                c = 1
+                                            sdo_data = self._sdo_data[(self._sdo_seqno - 1) * 7:self._sdo_seqno * 7].ljust(7, b'\x00')
+                                            data = struct.pack("<B7s", (c << 7) + self._sdo_seqno, sdo_data)
+                                            sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
+                                            if sdo_server_scid is None:
+                                                raise ValueError("SDO Server SCID not specified")
+                                            msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
+                                            self._send(msg)
+                                            data_len = len(self._sdo_data) - 7 * self._sdo_seqno
+                                            self._sdo_seqno += 1
+                                        return
+                                    elif cs == SDO_BLOCK_SUBCOMMAND_RESPONSE:
+                                        if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
+                                            raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
+                                        logger.info("SDO block upload response for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        ackseq = data[1]
+                                        blksize = data[2]
+                                        if ackseq != 0:
+                                            data_len = len(self._sdo_data)
+                                            bytes_transferred = 7 * ackseq
+                                            bytes_left = data_len - bytes_transferred
+                                            if bytes_left < 0:
+                                                n = -bytes_left
+                                            else:
+                                                n = 0
+                                            self._sdo_data = self._sdo_data[bytes_transferred:]
+                                        self._sdo_seqno = ackseq + 1
+                                        self._sdo_len = blksize
+                                        data_len = len(self._sdo_data)
+                                        if data_len == 0:
+                                            crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
+                                            data = struct.pack("<BH5x", (SDO_SCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + (n << 2) + SDO_BLOCK_SUBCOMMAND_END, crc)
+                                        else:
+                                            while data_len > 0 and self._sdo_seqno <= self._sdo_len:
+                                                if data_len > 7:
+                                                    c = 0
+                                                else:
+                                                    c = 1
+                                                sdo_data = self._sdo_data[self._sdo_seqno - 1:self._sdo_seqno + 7].ljust(7, b'\x00')
+                                                data = struct.pack("<B7s", (c << 7) + self._sdo_seqno, sdo_data)
+                                                sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
+                                                if sdo_server_scid is None:
+                                                    raise ValueError("SDO Server SCID not specified")
+                                                msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
+                                                self._send(msg)
+                                                data_len = len(self._sdo_data) - 7 * self._sdo_seqno
+                                                self._sdo_seqno += 1
+                                            return
+                                    else: # SDO_BLOCK_SUBCOMMAND_END
+                                        if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
+                                            raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
+                                        logger.info("SDO block upload end request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        self._sdo_cs = None
+                                        self._sdo_data = None
+                                        self._sdo_len = None
+                                        self._sdo_odi = None
+                                        self._sdo_odsi = None
+                                        self._sdo_seqno = 0
+                                        self._sdo_t = None
+                                        return
                                 else:
-                                    n = 4 - data_type_length
-                                    s = 1
-                                    e = 1
-                                    sdo_data = bytes(subobj)
-                                data = struct.pack("<BHB4s", (scs << SDO_CS_BITNUM) + (n << SDO_INITIATE_N_BITNUM) + (e << SDO_E_BITNUM), odi, odsi, sdo_data)
-                            elif ccs == SDO_CCS_UPLOAD_SEGMENT:
-                                if self._sdo_data is None:
-                                    logger.error("SDO Upload Initiate Request aborted, initiate not received or aborted")
-                                    raise SdoAbort(0, 0, SDO_ABORT_GENERAL) # Initiate not receieved or aborted
-                                scs = SDO_SCS_UPLOAD_SEGMENT
-                                t = (data[0] >> SDO_T_BITNUM) & 1
-                                if self._sdo_t != t:
-                                    raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_TOGGLE)
-                                self._sdo_t = t ^ 1
-                                if self._sdo_len > 7:
-                                    l = 7
-                                else:
-                                    l = self._sdo_len
-                                sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+l or None)]
-                                self._sdo_len -= l
-                                n = 7 - l
-                                if self._sdo_len > 0:
-                                    c = 0
-                                else:
-                                    self._sdo_data = None
-                                    self._sdo_len = None
-                                    self._sdo_t = None
-                                    c = 1
-                                data = struct.pack("<B{}s".format(len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
-                            elif ccs == SDO_CS_ABORT:
-                                logger.info("SDO aborted.")
-                                self._sdo_data = None
-                                self._sdo_len = None
-                                self._sdo_t = None
-                                self._sdo_odi = None
-                                self._sdo_odsi = None
-                                return
-                            else:
-                                logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
-                                raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_CS)
+                                    logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
+                                    raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS)
                         except SdoAbort as a:
+                            self._sdo_seqno = 0
                             self._sdo_data = None
                             self._sdo_len = None
                             self._sdo_t = None

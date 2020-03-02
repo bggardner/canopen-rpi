@@ -149,6 +149,7 @@ window.addEventListener("DOMContentLoaded", event => {
   });
 
   document.querySelector("#sdo-send").addEventListener("click", (event) => {
+    document.querySelector("#sdo-response").innerHTML = "Please wait...";
     sdoNodeId = parseInt(document.querySelector("#sdo-node-id").value);
     sdoIndex = parseInt(document.querySelector("#sdo-index").value);
     sdoSubIndex = parseInt(document.querySelector("#sdo-subindex").value);
