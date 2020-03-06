@@ -805,8 +805,8 @@ class Node:
                                         n = (data[0] >> 2) & 0x07
                                         self._sdo_data = self._sdo_data[0:-n]
                                         if self._sdo_t: # Check CRC
-                                            crc = struct.unpack("<H", data[1:3])
-                                            if crc != crc_hqx(self._sdo_data, 0):
+                                            crc, = struct.unpack("<H", data[1:3])
+                                            if crc != crc_hqx(bytes(self._sdo_data), 0):
                                                 raise SdoAbort(self._sdo_odi, self._sdo_odsi, SDO_ABORT_CRC_ERROR)
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
