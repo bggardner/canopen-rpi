@@ -117,18 +117,18 @@ window.addEventListener("DOMContentLoaded", event => {
                 let e = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.E_BITNUM) & 0x1;
                 let n = 0;
                 if (s) { n = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.N_BITNUM) & 0x3; }
-                document.querySelector("#sdo-value").value = new Uint32Array(new Uint8Array(msg.data.slice(4, 8)).buffer)[0];
+                document.querySelector("#sdo-value").value = new Uint32Array(msg.data.slice(4, 8 - n).buffer)[0];
                 if (e) {
                   document.querySelector("#sdo-response").innerHTML = "Expedited upload successful.";
                 } else {
-                  document.querySelector("#sdo-response").innerHTML = "Normal upload successful.";
+                  document.querySelector("#sdo-response").innerHTML = "Normal upload available, value is size.";
                   ws.send(new CanOpenSdoAbortRequest(sdoNodeId, sdoIndex, sdoSubIndex, CanOpenSdoAbortRequest.ABORT_GENERAL));
                 }
                 break;
               case CanOpenSdoMessage.SCS_UPLOAD_SEGMENT:
                 break;
               case CanOpenSdoMessage.CS_ABORT:
-                document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + new Uint32Array(msg.data.slice(4, 8).buffer).toString(16).padStart(8, "0");
+                document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + new Uint32Array(msg.data.slice(4, 8).buffer)[0].toString(16).padStart(8, "0");
                 break;
               default:
             }
@@ -158,14 +158,14 @@ window.addEventListener("DOMContentLoaded", event => {
       if (document.querySelector("#sdo-value").disabled) {
           msg = new CanOpenSdoUploadInitiateRequest(sdoNodeId, sdoIndex, sdoSubIndex);
       } else {
-          msg = new CanOpenSdoDownloadInitiateRequest(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, parseInt(document.querySelector("#sdo-value").value));
+          msg = new CanOpenSdoDownloadInitiateRequest(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, new Uint32Array([parseInt(document.querySelector("#sdo-value").value)]));
       }
       ws.send(msg);
     } else {
       sdoClient = new CanOpenSdoClient(ws);
       if (document.querySelector("#sdo-value").disabled) {
         sdoClient.upload(sdoNodeId, sdoIndex, sdoSubIndex).then(response => {
-          document.querySelector("#sdo-value").value = response;
+          document.querySelector("#sdo-value").value = new Uint32Array([response.buffer])[0];
           document.querySelector("#sdo-response").innerHTML = "Upload successful.";
           sdoClient = undefined;
         }).catch(error => {
@@ -174,7 +174,7 @@ window.addEventListener("DOMContentLoaded", event => {
           sdoClient = undefined;
         });
       } else {
-        sdoClient.download(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, parseInt(document.querySelector("#sdo-value").value)).then(response => {
+        sdoClient.download(sdoNodeId, sdoIndex, sdoSubIndex, new Uint32Array([parseInt(document.querySelector("#sdo-value").value)])).then(response => {
           document.querySelector("#sdo-response").innerHTML = "Download successful.";
           sdoClient = undefined;
         }).catch(error => {

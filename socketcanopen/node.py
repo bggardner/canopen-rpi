@@ -690,7 +690,7 @@ class Node:
                                 elif ccs == SDO_CCS_DOWNLOAD_SEGMENT:
                                     if self._sdo_data is None:
                                         logger.error("SDO Download Segment Request aborted, initate not received or aborted")
-                                        raise SdoAbort(0, 0, SDO_INVALID_CS) # Initiate not receieved or aborted
+                                        raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
                                     scs = SDO_SCS_DOWNLOAD_SEGMENT
                                     t = (data[0] >> SDO_T_BITNUM) & 1
                                     if self._sdo_t != t:

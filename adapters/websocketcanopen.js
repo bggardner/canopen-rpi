@@ -1,32 +1,65 @@
+/**
+ * Wrapper class that translates WebSocket message data to/from a CanOpenMesssage instance
+ * @extends WebSocketCan
+ */
 class WebSocketCanOpen extends WebSocketCan {
-  _messageHandler(event) {
+  /**
+   * Casts a CanMessage from MessageEvent data and passes it to handleMessageEvent()
+   * @override
+   * @protected
+   * @param {MessageEvent} event
+   */
+  messageEventHandler(event) {
     let init = Object.assign({}, event);
     init.data = CanOpenMessage.from(new Uint8Array(event.data));
     event = new MessageEvent(event.type, init);
-    this._handleMessageEvent(event);
+    this.handleMessageEvent(event);
   }
 }
 
+/**
+ * Helper class that provides SDO Client functionality through Promises
+ * @extends EventTarget
+ */
 class CanOpenSdoClient extends EventTarget {
+  /**
+   * Create a new CanOpenSdoClient instance.
+   * @param {WebSocketCanOpen} ws - An open WebSocketCanOpen instance.
+   * @param {number} timeout - SDO timeout (in ms)
+   * @throws {string} - Exception description
+   */
   constructor(ws, timeout=2000) {
     super();
-    if (!(ws instanceof WebSocket)) { throw "Websocket is required"; }
+    if (!(ws instanceof WebSocketCanOpen)) { throw "WebSocketCanOpen is required"; }
     if (ws.readyState != WebSocket.OPEN) { throw "Websocket is not open"; }
+    /**
+      @protected
+      @const
+     */
     this.ws = ws;
+    /** @const */
     this.timeout = timeout;
+    /**
+      @private
+      @const
+     */
+    this.listener_ = this.recv_.bind(this);
     this.ws.addEventListener("error", event => { this.abort(CanOpenSdoAbortRequest.ABORT_CONNECTION); }, {once: true});
     this.ws.addEventListener("close", event => { this.abort(CanOpenSdoAbortRequest.ABORT_CONNECTION); }, {once: true});
-    this._listener = this._recv.bind(this);
   }
 
-  async _blockDownloadSubBlocks() {
+  /**
+   * Subroutine for sending unconfirmed SDO download sub-blocks.
+   * @private
+   */
+  async blockDownloadSubBlocks_() {
     let dataLength = this.transaction.data.length;
     while (dataLength > 0 && this.transaction.seqno <= this.transaction.blksize) {
       let c = 0;
       if (dataLength <= 7) { c = 1; }
       let data = this.transaction.data.slice((this.transaction.seqno - 1) * 7, this.transaction.seqno * 7);
       await new Promise(resolve => setTimeout(resolve, 0)); // Without this, things hang
-      this._send(new CanOpenSdoBlockDownloadSubBlockRequest(this.transaction.nodeId, c, this.transaction.seqno, data));
+      this.send_(new CanOpenSdoBlockDownloadSubBlockRequest(this.transaction.nodeId, c, this.transaction.seqno, data));
       clearTimeout(this.transaction.timer);
       dataLength -= 7;
       this.transaction.seqno++;
@@ -34,15 +67,25 @@ class CanOpenSdoClient extends EventTarget {
     this.transaction.timer = setTimeout(() => this.abort(CanOpenSdoAbortRequest.ABORT_TIMEOUT), this.timeout);
   }
 
-  _end(event) {
+  /**
+   * Ends a a transaction.
+   * @private
+   * @param {CustomEvent} event
+   */
+  end_(event) {
     delete this.transaction;
     if (this.ws.readyState == WebSocket.OPEN) {
-      this.ws.removeEventListener("message", this._listener);
+      this.ws.removeEventListener("message", this.listener_);
     }
     this.dispatchEvent(event);
   }
 
-  _recv(event) {
+  /**
+   * Processes a received a MessageEvent.
+   * @private
+   * @param {MessageEvent} event
+   */
+  recv_(event) {
     let msg = event.data;
     if (!(this.hasOwnProperty("transaction")) || msg.functionCode != CanOpenMessage.FUNCTION_CODE_SDO_TX || this.transaction.nodeId != msg.nodeId) { return; }
     if (this.transaction.scs == CanOpenSdoMessage.SCS_BLOCK_UPLOAD && this.transaction.seqno > 0) {
@@ -68,11 +111,11 @@ class CanOpenSdoClient extends EventTarget {
         }
       }
       let blksize = 127;
-      this._send(new CanOpenSdoBlockUploadResponse(this.transaction.nodeId, ackseq, blksize));
+      this.send_(new CanOpenSdoBlockUploadResponse(this.transaction.nodeId, ackseq, blksize));
       return;
     }
     let scs = msg.data[0] >> CanOpenSdoMessage.CS_BITNUM;
-    if (scs == CanOpenSdoMessage.CS_ABORT) { return this._end(new CustomEvent("abort", {detail: new Uint32Array(msg.data.slice(4, 8).buffer)[0]})); }
+    if (scs == CanOpenSdoMessage.CS_ABORT) { return this.end_(new CustomEvent("abort", {detail: new Uint32Array(msg.data.slice(4, 8).buffer)[0]})); }
     if (scs != this.transaction.scs) { return this.abort(CanOpenSdoAbortRequest.ABORT_INVALID_CS); }
     clearTimeout(this.transaction.timer);
     if (scs == CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE) {
@@ -89,23 +132,26 @@ class CanOpenSdoClient extends EventTarget {
           c = 1;
         }
         let data = new Uint8Array(7);
-        data = data.set(this.transaction.data.slice(this.transaction.dataOffset, this.transaction.dataOffset + 7));
-        this._send(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
+        data.set(this.transaction.data.slice(0, 7));
+        this.send_(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
       } else {
-        this._end(new CustomEvent("done", {detail: 0}));
+        this.end_(new CustomEvent("done", {detail: true}));
       }
     } else if (scs == CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT) {
-      this.transaction.toggle ^= 1;
+      let t = (msg.data[0] >> CanOpenSdoDownloadSegmentResponse.T_BITNUM) & 0x1;
+      if (t != this.transaction.toggle) { return this.abort(CanOpenSdoAbortRequest.ABORT_TOGGLE); }
       this.transaction.dataOffset += 7;
+      if (this.transaction.dataOffset >= this.transaction.data.length) { return this.end_(new CustomEvent("done", {detail: true})); }
+      this.transaction.toggle ^= 1;
       let n = 0;
       let c = 0;
-      if (this.transaction.data.length <= this.transaction.dataOffset + 7) {
-        n = 7 - this.transaction.data.length;
+      if (this.transaction.data.length - this.transaction.dataOffset <= 7) {
+        n = 7 - (this.transaction.data.length - this.transaction.dataOffset);
         c = 1;
       }
       let data = new Uint8Array(7);
-      data = data.set(this.transaction.data.slice(this.transaction.dataOffset, this.transaction.dataOffset + 7));
-      this._send(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
+      data.set(this.transaction.data.slice(this.transaction.dataOffset, this.transaction.dataOffset + 7));
+      this.send_(new CanOpenSdoDownloadSegmentRequest(this.transaction.nodeId, this.transaction.toggle, n, c, data));
     } else if (scs == CanOpenSdoMessage.SCS_UPLOAD_INITIATE) {
       let index = new Uint16Array(msg.data.slice(1,3).buffer)[0];
       let subIndex = msg.data[3];
@@ -118,13 +164,13 @@ class CanOpenSdoClient extends EventTarget {
       data.set(msg.data.slice(4, 8 - n));
       data = new Uint32Array(data.buffer)[0];
       if (e) {
-        this._end(new CustomEvent("done", {detail: data}));
+        this.end_(new CustomEvent("done", {detail: data}));
       } else {
         this.transaction.scs = CanOpenSdoMessage.SCS_UPLOAD_SEGMENT;
         this.transaction.toggle = 0;
         this.transaction.data = new Uint8Array(data);
         this.transaction.dataOffset = 0;
-        this._send(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
+        this.send_(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
       }
     } else if (scs == CanOpenSdoMessage.SCS_UPLOAD_SEGMENT) {
       let t = (msg.data[0] >> CanOpenSdoUploadSegmentResponse.T_BITNUM) & 0x1;
@@ -133,11 +179,11 @@ class CanOpenSdoClient extends EventTarget {
       this.transaction.data.set(msg.data.slice(1, 8 - n), this.transaction.dataOffset);
       let c = (msg.data[0] >> CanOpenSdoUploadSegmentResponse.C_BITNUM) & 0x1;
       if (c) {
-        this._end(new CustomEvent("done", {detail: this.transaction.data}));
+        this.end_(new CustomEvent("done", {detail: this.transaction.data}));
       } else {
         this.transaction.dataOffset += 7 - n;
         this.transaction.toggle ^= 1;
-        this._send(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
+        this.send_(new CanOpenSdoUploadSegmentRequest(this.transaction.nodeId, this.transaction.toggle));
       }
     } else if (scs == CanOpenSdoMessage.SCS_BLOCK_DOWNLOAD) {
       let dataLength, c, data;
@@ -150,7 +196,7 @@ class CanOpenSdoClient extends EventTarget {
         let blksize = msg.data[4];
         this.transaction.blksize = blksize;
         this.transaction.seqno = 1;
-        this._blockDownloadSubBlocks();
+        this.blockDownloadSubBlocks_();
       } else if (ss == CanOpenSdoBlockMessage.SUBCOMMAND_RESPONSE) {
         let ackseq = msg.data[1];
         let blksize = msg.data[2];
@@ -165,14 +211,14 @@ class CanOpenSdoClient extends EventTarget {
           this.transaction.data.splice(0, ackseq * 7);
         }
         if (this.transaction.data.length == 0) {
-          this._send(new CanOpenSdoBlockDownloadEndRequest(this.transaction.nodeId, n, this.transaction.crc));
+          this.send_(new CanOpenSdoBlockDownloadEndRequest(this.transaction.nodeId, n, this.transaction.crc));
         } else {
           this.transaction.seqno = 1;
           this.transaction.blksize = blksize;
-          this._blockDownloadSubBlocks();
+          this.blockDownloadSubBlocks_();
         }
       } else if (ss == CanOpenSdoBlockMessage.SUBCOMMAND_END) {
-        this._end(new CustomEvent("done", {detail: 0}));
+        this.end_(new CustomEvent("done", {detail: true}));
       } else {
         this.abort(CanOpenSdoAbortRequest.ABORT_INVALID_CS);
       }
@@ -191,21 +237,26 @@ class CanOpenSdoClient extends EventTarget {
         this.transaction.size = size;
         this.transaction.data = [];
         this.transaction.seqno = 1;
-        this._send(new CanOpenSdoBlockUploadStartRequest(this.transaction.nodeId));
+        this.send_(new CanOpenSdoBlockUploadStartRequest(this.transaction.nodeId));
       } else { // ss == CanOpenSdoBlockMessage.SUBCOMMAND_END
         let n = (msg.data[0] >> 2) & 0x7;
         this.transaction.data.splice(-n);
         let crc = new Uint16Array(msg.data.slice(1,3).buffer)[0];
         if (this.transaction.hasOwnProperty("crc") && this.transaction.crc != crc) { return this.abort(CanOpenSdoAbortRequest.ABORT_CRC_ERROR); }
-        this._send(new CanOpenSdoBlockUploadEndResponse(this.transaction.nodeId));
-        this._end(new CustomEvent("done", {detail: new Uint8Array(this.transaction.data)}));
+        this.send_(new CanOpenSdoBlockUploadEndResponse(this.transaction.nodeId));
+        this.end_(new CustomEvent("done", {detail: new Uint8Array(this.transaction.data)}));
       }
     } else {
       this.abort(CanOpenSdoAbortRequest.ABORT_INVALID_CS);
     }
   }
 
-  _send(msg) {
+  /**
+   * Sends a CanOpenSdoMessage to the WebSocketCanOpen and starts the watchdog timer.
+   * @private
+   * @param {CanOpenSdoMessage} msg
+   */
+  send_(msg) {
     if (this.ws.readyState == WebSocket.OPEN) {
       this.ws.send(msg);
       this.transaction.timer = setTimeout(() => this.abort(CanOpenSdoAbortRequest.ABORT_TIMEOUT), this.timeout);
@@ -215,15 +266,24 @@ class CanOpenSdoClient extends EventTarget {
     }
   }
 
-  _start(msg) {
+  /**
+   * Starts an SDO transaction
+   * @private
+   * @param {CanOpenSdoMessage} msg
+   */
+  start_(msg) {
     return new Promise((resolve, reject) => {
       this.addEventListener("done", event => { resolve(event.detail); }, {once: true});
       this.addEventListener("abort", event => { reject(event.detail); }, {once: true});
-      this.ws.addEventListener("message", this._listener);
-      this._send(msg);
+      this.ws.addEventListener("message", this.listener_);
+      this.send_(msg);
     });
   }
 
+  /**
+   * Aborts an SDO transaction, if in process
+   * @param {number} [code=CanOpenSdoAbortRequest.ABORT_GENERAL] - SDO abort code
+   */
   abort(code=CanOpenSdoAbortRequest.ABORT_GENERAL) {
     if (this.hasOwnProperty("transaction")) {
       clearTimeout(this.transaction.timer);
@@ -233,12 +293,21 @@ class CanOpenSdoClient extends EventTarget {
         code = CanOpenSdoAbortRequest.ABORT_CONNECTION;
       }
     }
-    this._end(new CustomEvent("abort", {detail: code}));
+    this.end_(new CustomEvent("abort", {detail: code}));
   }
 
+  /**
+   * Starts an SDO block download transaction.
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} index - CANopen object dictionary index
+   * @param {number} subIndex - CANopen object dictionary sub-index
+   * @param {TypedArray} data - Data to be downloaded to the object
+   * @returns {Promise} - Resolves true or rejects an SDO abort code
+   */
   blockDownload(nodeId, index, subIndex, data) {
     let cc = 1; // CRC support
     let s = 1;
+    data = new Uint8Array(data.buffer);
     this.transaction = {
       nodeId: nodeId,
       scs: CanOpenSdoMessage.SCS_BLOCK_DOWNLOAD,
@@ -248,9 +317,16 @@ class CanOpenSdoClient extends EventTarget {
       data: Array.from(data),
       crc: CanOpenSdoBlockMessage.crc(data)
     }
-    return this._start(new CanOpenSdoBlockDownloadInitiateRequest(nodeId, cc, s, index, subIndex, data.length));
+    return this.start_(new CanOpenSdoBlockDownloadInitiateRequest(nodeId, cc, s, index, subIndex, data.length));
   }
 
+  /**
+   * Starts an SDO block upload transaction.
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} index - CANopen object dictionary index
+   * @param {number} subIndex - CANopen object dictionary sub-index
+   * @returns {Promise} - Resolves a Uint8Array or rejects an SDO abort code
+   */
   blockUpload(nodeId, index, subIndex) {
     let cc = 1; // CRC Support
     let blksize = 127;
@@ -264,25 +340,49 @@ class CanOpenSdoClient extends EventTarget {
       blksize: blksize,
       pst: pst
     }
-    return this._start(new CanOpenSdoBlockUploadInitiateRequest(nodeId, cc, index, subIndex, blksize, pst));
+    return this.start_(new CanOpenSdoBlockUploadInitiateRequest(nodeId, cc, index, subIndex, blksize, pst));
   }
 
-  download(nodeId, n, e, s, index, subIndex, data) {
+  /**
+   * Starts an SDO download transaction.
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} index - CANopen object dictionary index
+   * @param {number} subIndex - CANopen object dictionary sub-index
+   * @param {TypedArray} data - Data to be downloaded to the object
+   * @returns {Promise} - Resolves true or rejects an SDO abort code
+   */
+  download(nodeId, index, subIndex, data) {
+    data = new Uint8Array(data.buffer);
+    let n = 0;
+    if (data.length < 4) {
+      n = 4 - data.length;
+    }
+    let e = 0;
+    if (data.length <= 4) {
+      e = 1;
+    }
+    let s = 1;
     this.transaction = {
       nodeId: nodeId,
       scs: CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE,
       index: index,
-      subIndex: subIndex,
-      crc: CanOpenSdoBlockMessage.crc(data)
+      subIndex: subIndex
     }
     if (!e) {
-      if (!(data instanceof Uint8Array)) { throw "Normal SDO data must be of type Uint8Array"; }
       this.transaction.data = data;
       this.transaction.dataOffset = 0;
+      data = new Uint8Array(new Uint32Array([data.length]).buffer);
     }
-    return this._start(new CanOpenSdoDownloadInitiateRequest(nodeId, n, e, s, index, subIndex, data));
+    return this.start_(new CanOpenSdoDownloadInitiateRequest(nodeId, n, e, s, index, subIndex, data));
   }
 
+  /**
+   * Starts an SDO upload transaction.
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} index - CANopen object dictionary index
+   * @param {number} subIndex - CANopen object dictionary sub-index
+   * @returns {Promise} - Resolves a Uint8Array or rejects an SDO abort code
+   */
   upload(nodeId, index, subIndex=0) {
     this.transaction = {
       nodeId: nodeId,
@@ -290,12 +390,20 @@ class CanOpenSdoClient extends EventTarget {
       index: index,
       subIndex: subIndex
     }
-    return this._start(new CanOpenSdoUploadInitiateRequest(nodeId, index, subIndex));
+    return this.start_(new CanOpenSdoUploadInitiateRequest(nodeId, index, subIndex));
   }
 }
 
+/** Class for sending data on a WebSocketCanOpen. */
 class CanOpenMessage extends CanMessage {
-  constructor(functionCode, nodeId, data=[]) {
+  /**
+   * Create a new CanOpenMessage.
+   * @param {number} functionCode - CANopen function code (4 bits)
+   * @param {number} nodeId - CANopen Node-ID or command
+   * @param {TypedArray} [data=new Uint8Array()] - CAN frame data bytes
+  */
+  constructor(functionCode, nodeId, data=new Uint8Array()) {
+    data = new Uint8Array(data.buffer);
     super((functionCode << 7) + nodeId, data, false, false, false);
   }
 
@@ -315,6 +423,9 @@ class CanOpenMessage extends CanMessage {
   static get FUNCTION_CODE_SDO_RX() { return 0xC; }
   static get FUNCTION_CODE_NMT_ERROR_CONTROL() { return 0xE; }
 
+  /**
+   * @type {number}
+  */
   get functionCode() {
     return this.arbitrationId >> 7;
   }
@@ -323,6 +434,9 @@ class CanOpenMessage extends CanMessage {
     this.arbitrationId = ((fc & 0xF) << 7) + this.nodeId;
   }
 
+  /**
+   * @type {number}
+   */
   get nodeId() {
     return this.arbitrationId & 0x7F;
   }
@@ -331,6 +445,11 @@ class CanOpenMessage extends CanMessage {
     this.arbitrationId = (this.functionCode << 7) + (id & 0x7F);
   }
 
+  /**
+   * Factory function for converting raw bytes to a CanOpenMessage instance.
+   * @param {Uint8Array} byteArray - Byte array from the raw WebSocket message data
+   * @returns {CanOpenMessage}
+   */
   static from(byteArray) { // Factory from SocketCAN-formatted byte array
       let nodeId = byteArray[0] & 0x7F;
       let functionCode = byteArray[0] >> 7;
@@ -341,36 +460,103 @@ class CanOpenMessage extends CanMessage {
   }
 }
 
+/**
+ * Base class for NMT messages.
+ * @extends CanOpenMessage
+ */
+class CanOpenNmtMessage extends CanOpenMessage {
+  /**
+   * @param {number} command - CANopen NMT command
+   * @param {Uint8Array} [data=new Uint8Array()] - CANopen NMT command arguments
+   */
+  constructor(command, data=new Uint8Array()) {
+    super(CanOpenMessage.FUNCTION_CODE_NMT, command, data);
+  }
+}
+
+/**
+ * Class for NMT node control messages.
+ * @extends CanOpenNmtMessage
+ */
+class CanOpenNmtNodeControlMessage extends CanOpenNmtMessage {
+  /**
+   * @param {number} cs - CANopen NMT state
+   * @param {number} nodeID - Target CANopen Node-ID (0 for all nodes)
+   */
+  constructor(cs, nodeId=0) {
+    let data = new Uint8Array([cs, nodeId]);
+    super(0, data);
+  }
+}
+
+/**
+ * Class for the CANopen NMT error control message.
+ * @extends CanOpenMessage
+ */
 class CanOpenNmtErrorControlMessage extends CanOpenMessage {
-  constructor(nodeId, data) {
+  /**
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} s - CANopen operational state
+   */
+  constructor(nodeId, s) {
+    let data = new Uint8Array([s]);
     super(CanOpenMessage.FUNCTION_CODE_NMT_ERROR_CONTROL, nodeId, data);
   }
 }
 
+/**
+ * Class for the CANopen boot-up message.
+ * @extends CanOpenNmtErrorControlMessage
+ */
 class CanOpenBootupMessage extends CanOpenNmtErrorControlMessage {
+  /**
+   * @param {number} nodeId - CANopen Node-ID
+   */
   constructor(nodeId) {
-    super(nodeId, [0]);
+    super(nodeId, CanOpenNmtState.INITIALISATION);
   }
 }
 
+/**
+ * Class for the CANopen heartbeat message.
+ * @extends CanOpenNmtErrorControlMessage
+ */
 class CanOpenHeartbeatMessage extends CanOpenNmtErrorControlMessage {
-  constructor(nodeId, nmtState) {
-    super(nodeId, [nmtState]);
+  /**
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} s - CANopen NMT state, one of the {@link CanOpenNmtState} properties
+   */
+  constructor(nodeId, s) {
+    super(nodeId, [s]);
   }
 }
 
+/**
+ * Base class for CANopen SDO messages.
+ * @extends CanOpenMessage
+ */
 class CanOpenSdoMessage extends CanOpenMessage {
+  /**
+   * @param {number} functionCode - CANopen function code
+   * @param {number} nodeId - CANopen Node-ID
+   * @param {number} sdoHeader - SDO header byte
+   * @param {Uint8Array} sdoData - SDO data bytes
+   */
   constructor(functionCode, nodeId, sdoHeader, sdoData) {
     let data = new Uint8Array(8);
-    data[0] = sdoHeader;
+    data.set(new Uint8Array([sdoHeader]));
     data.set(sdoData, 1);
     super(functionCode, nodeId, data);
   }
 
-  // Bit positions and masks
+  /**
+   * Command specifier bit position
+   * @constant
+   * @type {number}
+   * @default 5
+   */
   static get CS_BITNUM() { return 5; }
 
-  // Command specifiers
   static get CCS_DOWNLOAD_SEGMENT() { return 0; }
   static get CCS_DOWNLOAD_INITIATE() { return 1; }
   static get CCS_UPLOAD_INITIATE() { return 2; }
@@ -385,7 +571,11 @@ class CanOpenSdoMessage extends CanOpenMessage {
   static get SCS_BLOCK_DOWNLOAD() { return 5; }
   static get SCS_BLOCK_UPLOAD() { return 6; }
 
-  // Derived properties
+  /**
+   * Command specifier
+   * @readonly
+   * @type {number}
+   */
   get cs() { return (this.data[0] >> CanOpenSdoMessage.CS_BITNUM) & 0x7; }
 }
 
@@ -437,11 +627,10 @@ const CanOpenSdoAbortMixIn = superclass => class extends superclass {
 
   constructor(nodeId, index, subIndex, abortCode) {
     let sdoHeader = CanOpenSdoMessage.CS_ABORT << CanOpenSdoMessage.CS_BITNUM;
-    let sdoData = [index & 0xFF, index >> 8, subIndex];
-    sdoData.push((abortCode >> 0) & 0xFF);
-    sdoData.push((abortCode >> 8) & 0xFF);
-    sdoData.push((abortCode >> 16) & 0xFF);
-    sdoData.push((abortCode >> 24) & 0xFF);
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set([subIndex], 2);
+    sdoData.set(new Uint8Array(new Uint32Array([abortCode]).buffer), 3);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -453,24 +642,23 @@ class CanOpenSdoAbortResponse extends CanOpenSdoAbortMixIn(CanOpenSdoResponse) {
 class CanOpenSdoDownloadInitiateRequest extends CanOpenSdoInitiateMixIn(CanOpenSdoRequest) {
   constructor(nodeId, n, e, s, index, subIndex, data) {
     let sdoHeader = CanOpenSdoMessage.CCS_DOWNLOAD_INITIATE << CanOpenSdoMessage.CS_BITNUM;
-    sdoHeader += n << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).N_BITNUM;
-    sdoHeader += e << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).E_BITNUM;
-    sdoHeader += s << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).S_BITNUM;
-    let sdoData = [index & 0xFF, index >> 8, subIndex];
-    sdoData.push((data >> 0) & 0xFF);
-    sdoData.push((data >> 8) & 0xFF);
-    sdoData.push((data >> 16) & 0xFF);
-    sdoData.push((data >> 24) & 0xFF);
+    sdoHeader += n << CanOpenSdoDownloadInitiateRequest.N_BITNUM;
+    sdoHeader += e << CanOpenSdoDownloadInitiateRequest.E_BITNUM;
+    sdoHeader += s << CanOpenSdoDownloadInitiateRequest.S_BITNUM;
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
+    sdoData.set(new Uint8Array(data.buffer), 3);
     super(nodeId, sdoHeader, sdoData);
   }
 }
 
 class CanOpenSdoDownloadSegmentRequest extends CanOpenSdoSegmentMixIn(CanOpenSdoRequest) {
-  constructor(nodeId, t, sdoData) {
+  constructor(nodeId, t, n, c, sdoData) {
     let sdoHeader = CanOpenSdoMessage.CCS_DOWNLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
-    sdoHeader += t << CanOpenSdoSegmentMixIn.T_BITNUM;
-    sdoHeader += n << CanOpenSdoSegmentMixIn.N_BITNUM;
-    sdoHeader += c << CanOpenSdoSegmentMixIn.C_BITNUM;
+    sdoHeader += t << CanOpenSdoDownloadSegmentRequest.T_BITNUM;
+    sdoHeader += n << CanOpenSdoDownloadSegmentRequest.N_BITNUM;
+    sdoHeader += c << CanOpenSdoDownloadSegmentRequest.C_BITNUM;
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -479,7 +667,7 @@ class CanOpenSdoDownloadSegmentResponse extends CanOpenSdoSegmentMixIn(CanOpenSd
   constructor(nodeId, t) {
     let sdoHeader = CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += t << CanOpenSdoDownloadSegmentResponse.T_BITNUM;
-    let sdoData = Array(7).fill(0x00);
+    let sdoData = new Uint8Array(7);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -487,7 +675,9 @@ class CanOpenSdoDownloadSegmentResponse extends CanOpenSdoSegmentMixIn(CanOpenSd
 class CanOpenSdoDownloadInitiateResponse extends CanOpenSdoInitiateMixIn(CanOpenSdoResponse) {
   constructor(nodeId, index, subIndex) {
     let sdoHeader = CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE << CanOpenSdoMessage.CS_BITNUM;
-    let sdoData = [index & 0xFF, index >> 8, subIndex, 0, 0, 0, 0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -495,7 +685,9 @@ class CanOpenSdoDownloadInitiateResponse extends CanOpenSdoInitiateMixIn(CanOpen
 class CanOpenSdoUploadInitiateRequest extends CanOpenSdoInitiateMixIn(CanOpenSdoRequest) {
   constructor(nodeId, index, subIndex) {
     let sdoHeader = CanOpenSdoMessage.CCS_UPLOAD_INITIATE << CanOpenSdoMessage.CS_BITNUM;
-    let sdoData = [index & 0xFF, index >> 8, subIndex, 0 ,0 ,0 ,0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -506,11 +698,10 @@ class CanOpenSdoUploadInitiateResponse extends CanOpenSdoInitiateMixIn(CanOpenSd
     sdoHeader += n << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).N_BITNUM;
     sdoHeader += e << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).E_BITNUM;
     sdoHeader += s << CanOpenSdoInitiateMixIn(CanOpenSdoRequest).S_BITNUM;
-    let sdoData = [index & 0xFF, index >> 8, subIndex];
-    sdoData.push((data >> 0) & 0xFF);
-    sdoData.push((data >> 8) & 0xFF);
-    sdoData.push((data >> 16) & 0xFF);
-    sdoData.push((data >> 24) & 0xFF);
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
+    sdoData.set(new Uint8Array(new Uint32Array([data]).buffer), 3);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -519,7 +710,7 @@ class CanOpenSdoUploadSegmentRequest extends CanOpenSdoSegmentMixIn(CanOpenSdoRe
   constructor(nodeId, t) {
     let sdoHeader = CanOpenSdoMessage.CCS_UPLOAD_SEGMENT << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += t << CanOpenSdoUploadSegmentRequest.T_BITNUM;
-    let sdoData = Array(7).fill(0x00);
+    let sdoData = new Uint8Array(7);
     super(nodeId, sdoHeader, sdoData);
   }
 }
@@ -601,7 +792,10 @@ class CanOpenSdoBlockDownloadInitiateRequest extends CanOpenSdoBlockMessage {
     sdoHeader += cc << 2;
     sdoHeader += s << 1;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_INITIATE;
-    let sdoData = [index & 0xFF, index >> 8, subIndex].concat(Array.from(new Uint8Array(new Uint32Array([size]).buffer)));
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
+    sdoData.set(new Uint8Array(new Uint32Array([size]).buffer), 3);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -612,7 +806,9 @@ class CanOpenSdoBlockDownloadInitiateResponse extends CanOpenSdoBlockMessage {
     let sdoHeader = CanOpenSdoMessage.SCS_BLOCK_DOWNLOAD << CanOpenMessage.CS_BITNUM;
     sdoHeader += sc << 2;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_INITIATE;
-    let sdoData = [index & 0xFF, index >> 8, subIndex, blksize, 0, 0, 0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex, blksize]), 2);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -630,7 +826,7 @@ class CanOpenSdoBlockDownloadResponse extends CanOpenSdoBlockMessage {
     let functionCode = CanOpenMessage.FUNCTION_CODE_SDO_TX;
     let sdoHeader = CanOpenSdoMessage.SCS_BLOCK_DOWNLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_RESPONSE;
-    let sdoData = [ackseq, blksize, 0, 0, 0, 0, 0];
+    let sdoData = new Uint8Array([ackseq, blksize, 0, 0, 0, 0, 0]);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -641,7 +837,8 @@ class CanOpenSdoBlockDownloadEndRequest extends CanOpenSdoBlockMessage {
     let sdoHeader = CanOpenSdoMessage.CCS_BLOCK_DOWNLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += n << 2;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_END;
-    let sdoData = [crc & 0xFF, crc >> 8, 0, 0, 0, 0, 0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([crc]).buffer));
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -662,7 +859,9 @@ class CanOpenSdoBlockUploadInitiateRequest extends CanOpenSdoBlockMessage {
     let sdoHeader = CanOpenSdoMessage.CCS_BLOCK_UPLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += cc << 2;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_INITIATE;
-    let sdoData = [index & 0xFF, index >> 8, subIndex, blksize, pst, 0, 0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex, blksize, pst]), 2);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -673,7 +872,10 @@ class CanOpenSdoBlockUploadInitiateResponse extends CanOpenSdoBlockMessage {
     let sdoHeader = CanOpenSdoMessage.SCS_BLOCK_UPLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += cc << 2;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_INITIATE;
-    let sdoData = [index & 0xFF, index >> 8, subIndex].concat(Array.from(new Uint8Array(new Uint32Array([size]).buffer)));
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([index]).buffer));
+    sdoData.set(new Uint8Array([subIndex]), 2);
+    sdoData.set(new Uint8Array(new Uint32Array([size]).buffer), 3);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -701,7 +903,7 @@ class CanOpenSdoBlockUploadResponse extends CanOpenSdoBlockMessage {
     let functionCode = CanOpenMessage.FUNCTION_CODE_SDO_RX;
     let sdoHeader = CanOpenSdoMessage.CCS_BLOCK_UPLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_RESPONSE;
-    let sdoData = [ackseq, blksize, 0, 0, 0, 0, 0];
+    let sdoData = new Uint8Array([ackseq, blksize, 0, 0, 0, 0, 0]);
     super(functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -712,7 +914,8 @@ class CanOpenSdoBlockUploadEndRequest extends CanOpenSdoBlockMessage {
     let sdoHeader = CanOpenSdoMessage.SCS_BLOCK_UPLOAD << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += n << 2;
     sdoHeader += CanOpenSdoBlockMessage.SUBCOMMAND_END;
-    let sdoData = [crc & 0xFF, crc >> 8, 0, 0, 0, 0, 0];
+    let sdoData = new Uint8Array(7);
+    sdoData.set(new Uint8Array(new Uint16Array([crc]).buffer));
     super (functionCode, nodeId, sdoHeader, sdoData);
   }
 }
@@ -727,9 +930,23 @@ class CanOpenSdoBlockUploadEndResponse extends CanOpenSdoBlockMessage {
   }
 }
 
+/**
+ * CANopen Time of Day data type
+ */
 class CanOpenTimeOfDay {
+  /**
+   * Returns the epoch
+   * @constant
+   * @type {Date}
+   * @default new Date("01 Jan 1984 00:00:00 GMT")
+   */
   static get EPOCH() { return new Date("01 Jan 1984 00:00:00 GMT"); }
 
+  /**
+   * Create a new CanOpenTimeofDay.
+   * @param {number} days - Number of days since the epoch
+   * @param {number} milliseconds - Milliseconds since the beginning of the day
+   */
   constructor(days, milliseconds) {
      this.days = days;
      this.milliseconds = milliseconds;
@@ -739,7 +956,7 @@ class CanOpenTimeOfDay {
     let tod = this;
     return {
       next() {
-        switch(this._cursor++) {
+        switch(this.cursor_++) {
           case 0: return {value: tod.milliseconds && 0xFF, done: false};
           case 1: return {value: (tod.milliseconds >> 8) & 0xFF, done: false};
           case 2: return {value: (tod.milliseconds >> 16) & 0xFF,done: false};
@@ -747,15 +964,19 @@ class CanOpenTimeOfDay {
           case 4: return {value: tod.days & 0xFF, done: false};
           case 5: return {value: tod.days >> 8, done: false};
           case 6:
-            this._cursor = 0;
+            this.cursor_ = 0;
             return {done: true};
           default:
         }
       },
-      _cursor: 0
+      cursor_: 0
     }
   }
 
+  /**
+   * Converts object to a Date
+   * @returns {Date}
+   */
   toDate() {
     let d = CanOpenTimeOfDay.EPOCH;
     d.setDate(d.getDate() + this.days);
@@ -763,6 +984,11 @@ class CanOpenTimeOfDay {
     return d;
   }
 
+  /**
+   * Factory function from a 6-byte array
+   * @param {Uint8Array} byteArray - 6-byte array defined in CiA 301
+   * @returns {CanOpenTimeOfDay}
+   */
   static from(byteArray) {
     let milliseconds = byteArray[0];
     milliseconds += byteArray[1] << 8;
@@ -773,14 +999,50 @@ class CanOpenTimeOfDay {
     return new this(days, milliseconds);
   }
 
-  static fromDate(d) {
-    let milliseconds = (d - this.EPOCH);
+  /**
+   * Factory function from a Date
+   * @param {Date} date
+   * @returns {CanOpenTimeOfDay}
+   */
+  static fromDate(date) {
+    let milliseconds = (date - this.EPOCH);
     let days = Math.floor(milliseconds / 1000 / 3600 / 24);
     milliseconds -= days * 24 * 3600 * 1000;
     return new this(days, milliseconds);
   }
 }
 
+/**
+ * Class of constants for CANopen NMT states
+ */
+class CanOpenNmtState {
+  /**
+   * @constant
+   * @type {number}
+   * @default 0
+   */
+  static get INITIALISATION() { return 0x00; }
+  /**
+   * @constant
+   * @type {number}
+   * @default 127
+   */
+  static get PREOPERATIONAL() { return 0x7F; }
+  /**
+   * @constant
+   * @type {number}
+   * @default 5
+   */
+  static get OPERATIONAL() { return 0x05; }
+  /**
+   * @constant
+   * @type {number}
+   * @default 4
+   */
+  static get STOPPED() { return 0x04; }
+}
+
+// Class below are under development
 class CanOpenObject extends Object {
   static get ACCESS_TYPE_RO() { return "ro"; }
   static get ACCESS_TYPE_WO() { return "wo"; }
@@ -805,10 +1067,10 @@ class CanOpenNode {
     this.reset()
   }
 
-  get NMT_STATE_INITIALISATION() { return 0x00; }
-  get NMT_STATE_STOPPED() { return 0x04; }
-  get NMT_STATE_OPERATIONAL() { return 0x05; }
-  get NMT_STATE_PREOPERATIONAL() { return 0x7F; }
+  static get NMT_STATE_INITIALISATION() { return 0x00; }
+  static get NMT_STATE_STOPPED() { return 0x04; }
+  static get NMT_STATE_OPERATIONAL() { return 0x05; }
+  static get NMT_STATE_PREOPERATIONAL() { return 0x7F; }
 
   boot() {
     this.ws.send(new CanOpenBootupMessage(this.id));
@@ -924,5 +1186,3 @@ class CanOpenNode {
     this.send(new CanOpenHeartbeatMessage(this.id, this.nmtState));
   }
 }
-
-
