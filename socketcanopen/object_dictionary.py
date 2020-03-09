@@ -2,6 +2,7 @@ from collections import Mapping, MutableMapping
 from configparser import ConfigParser
 from datetime import datetime, timedelta
 from enum import Enum, IntEnum, unique
+import struct
 
 from .constants import *
 
@@ -70,21 +71,21 @@ class ObjectDictionary(MutableMapping):
                 object_type=ObjectType.DEFTYPE,
                 access_type=AccessType.RO,
                 data_type=ODI_DATA_TYPE_UNSIGNED32,
-                default_value=0x00000000 # Implementation-specific
+                default_value=0x00000000
             ),
             ODI_DATA_TYPE_OCTET_STRING: Object(
                 parameter_name="OCTET_STRING",
                 object_type=ObjectType.DEFTYPE,
                 access_type=AccessType.RO,
                 data_type=ODI_DATA_TYPE_UNSIGNED32,
-                default_value=0x00000000 # Implementation-specific
+                default_value=0x00000000
             ),
             ODI_DATA_TYPE_UNICODE_STRING: Object(
                 parameter_name="UNICODE_STRING",
                 object_type=ObjectType.DEFTYPE,
                 access_type=AccessType.RO,
                 data_type=ODI_DATA_TYPE_UNSIGNED32,
-                default_value=0x00000000 # Implementation-specific
+                default_value=0x00000000
             ),
             ODI_DATA_TYPE_TIME_OF_DAY: Object(
                 parameter_name="TIME_OF_DAY",
@@ -686,15 +687,15 @@ class SubObject(ProtoObject):
               return struct.pack("<f", self.value)
             if self.data_type == ODI_DATA_TYPE_REAL64:
               return struct.pack("<d", self.value)
-        if isisntance(self.value, str):
+        if isinstance(self.value, str):
             if self.data_type == ODI_DATA_TYPE_VISIBLE_STRING:
                 return bytes(self.value, 'ascii') # CANopen Visible String encoding is ISO 646-1974 (ASCII)
             if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
                 return bytes(self.value, 'utf_16') # CANopen Unicode Strings are arrays of UNSIGNED16, assuming UTF-16
-        if isinstance(self.value, datetime.datetime):
-            td = self.value - datetime.datetime(1984, 1, 1)
+        if isinstance(self.value, datetime):
+            td = self.value - datetime(1984, 1, 1)
             return struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days)
-        if isisntance(self.value, datetime.timedelta):
+        if isinstance(self.value, timedelta):
             return struct.pack("<IH", int(self.value.seconds * 1000 + self.value.microseconds / 1000) << 4, self.value.days)
         return bytes(self.value) # Try casting if nothing else worked; custom data types should implement __bytes__()
 
@@ -728,18 +729,18 @@ class SubObject(ProtoObject):
         if self.data_type == ODI_DATA_TYPE_REAL64:
             return struct.unpack("<d", b)
         if self.data_type == ODI_DATA_TYPE_VISIBLE_STRING:
-            return b.decode('ascii')
+            return bytes(b).decode('ascii')
         if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
-            return b.decode('utf_16')
+            return bytes(b).decode('utf_16')
         if self.data_type == ODI_DATA_TYPE_TIME_OF_DAY:
-            ms, d = struct.unpack("<IH", b)
+            ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
-            td = datetime.timedelta(days=d, milliseconds=ms)
-            return datetime.datetime(1980, 1, 1) + td
+            td = timedelta(days=d, milliseconds=ms)
+            return datetime(1980, 1, 1) + td
         if self.data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
-            ms, d = struct.unpack("<IH", b)
+            ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
-            return datetime.timedelta(days=d, milliseconds=ms)
+            return timedelta(days=d, milliseconds=ms)
         return b # ODI_DATA_TYPE_OCTET_STRING or ODI_DATA_TYPE_DOMAIN
 
     def __setitem__(self, name, value):

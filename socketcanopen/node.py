@@ -712,7 +712,7 @@ class Node:
                                         self._sdo_odi = None
                                         self._sdo_odsi = None
                                         self._sdo_t = None
-                                    data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM))
+                                    data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM))
                                 elif ccs == SDO_CCS_UPLOAD_INITIATE:
                                     if subobj.access_type == AccessType.WO:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_WO)
@@ -725,12 +725,11 @@ class Node:
                                         data_type_object = self.od.get(data_type_index)
                                         if ODSI_VALUE in data_type_object:
                                             data_type_length = data_type_object.get(ODSI_VALUE).value // 8
-                                    if data_type_length is None: # Unknown data length, default to expedited 4 bytes
-                                        n = 0
-                                        s = 0
-                                        e = 1
-                                        sdo_data = bytes(subobj)
-                                    elif data_type_length > 4:
+                                            if data_type_length == 0:
+                                                data_type_length = None
+                                    if data_type_length is None:
+                                        data_type_length = len(bytes(subobj))
+                                    if data_type_length > 4:
                                         self._sdo_data = bytes(subobj)
                                         self._sdo_len = data_type_length
                                         self._sdo_t = 0

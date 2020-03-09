@@ -931,17 +931,9 @@ class CanOpenSdoBlockUploadEndResponse extends CanOpenSdoBlockMessage {
 }
 
 /**
- * CANopen Time of Day data type
+ * Abstract CANopen time data type
  */
-class CanOpenTimeOfDay {
-  /**
-   * Returns the epoch
-   * @constant
-   * @type {Date}
-   * @default new Date("01 Jan 1984 00:00:00 GMT")
-   */
-  static get EPOCH() { return new Date("01 Jan 1984 00:00:00 GMT"); }
-
+class CanOpenTimeDataType {
   /**
    * Create a new CanOpenTimeofDay.
    * @param {number} days - Number of days since the epoch
@@ -974,22 +966,12 @@ class CanOpenTimeOfDay {
   }
 
   /**
-   * Converts object to a Date
-   * @returns {Date}
-   */
-  toDate() {
-    let d = CanOpenTimeOfDay.EPOCH;
-    d.setDate(d.getDate() + this.days);
-    d.setMilliseconds(this.milliseconds);
-    return d;
-  }
-
-  /**
    * Factory function from a 6-byte array
-   * @param {Uint8Array} byteArray - 6-byte array defined in CiA 301
-   * @returns {CanOpenTimeOfDay}
+   * @param {ArrayBuffer} buffer - 6-byte array defined in CiA 301
+   * @returns {CanOpenTimeDataType}
    */
-  static from(byteArray) {
+  static from(buffer) {
+    let byteArray = new Uint8Array(buffer);
     let milliseconds = byteArray[0];
     milliseconds += byteArray[1] << 8;
     milliseconds += byteArray[2] << 16;
@@ -998,6 +980,19 @@ class CanOpenTimeOfDay {
     days += byteArray[5] << 8;
     return new this(days, milliseconds);
   }
+}
+
+/**
+ * CANopen time of day ata type
+ */
+class CanOpenTimeOfDay extends CanOpenTimeDataType {
+  /**
+   * Returns the epoch
+   * @constant
+   * @type {Date}
+   * @default new Date("01 Jan 1984 00:00:00 GMT")
+   */
+  static get EPOCH() { return new Date("01 Jan 1984 00:00:00 GMT"); }
 
   /**
    * Factory function from a Date
@@ -1010,7 +1005,23 @@ class CanOpenTimeOfDay {
     milliseconds -= days * 24 * 3600 * 1000;
     return new this(days, milliseconds);
   }
+
+  /**
+   * Converts object to a Date
+   * @returns {Date}
+   */
+  toDate() {
+    let d = CanOpenTimeOfDay.EPOCH;
+    d.setDate(d.getDate() + this.days);
+    d.setMilliseconds(this.milliseconds);
+    return d;
+  }
 }
+
+/**
+ * CANopen time difference data type
+ */
+class CanOpenTimeDifference extends CanOpenTimeDataType {}
 
 /**
  * Class of constants for CANopen NMT states
@@ -1042,18 +1053,170 @@ class CanOpenNmtState {
   static get STOPPED() { return 0x04; }
 }
 
-// Class below are under development
-class CanOpenObject extends Object {
+// Code below is under development
+
+// Polyfill from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer/transfer
+if (!ArrayBuffer.transfer) {
+    ArrayBuffer.transfer = function(source, length) {
+        if (!(source instanceof ArrayBuffer))
+            throw new TypeError('Source must be an instance of ArrayBuffer');
+        if (length <= source.byteLength)
+            return source.slice(0, length);
+        var sourceView = new Uint8Array(source),
+            destView = new Uint8Array(new ArrayBuffer(length));
+        destView.set(sourceView);
+        return destView.buffer;
+    };
+}
+
+class CanOpenObjectDictionary {
+  static get INDEX_DATA_TYPE_BOOLEAN() { return 0x0001; }
+  static get INDEX_DATA_TYPE_INTEGER8() { return 0x0002; }
+  static get INDEX_DATA_TYPE_INTEGER16() { return 0x0003; }
+  static get INDEX_DATA_TYPE_INTEGER32() { return 0x0004; }
+  static get INDEX_DATA_TYPE_UNSIGNED8() { return 0x0005; }
+  static get INDEX_DATA_TYPE_UNSIGNED16() { return 0x0006; }
+  static get INDEX_DATA_TYPE_UNSIGNED32() { return 0x0007; }
+  static get INDEX_DATA_TYPE_REAL32() { return 0x0008; }
+  static get INDEX_DATA_TYPE_VISIBLE_STRING() { return 0x0009; }
+  static get INDEX_DATA_TYPE_OCTET_STRING() { return 0x000A; }
+  static get INDEX_DATA_TYPE_UNICODE_STRING() { return 0x000B; }
+  static get INDEX_DATA_TYPE_TIME_OF_DAY() { return 0x000C; }
+  static get INDEX_DATA_TYPE_TIME_DIFFERENCE() { return 0x000D; }
+  static get INDEX_DATA_TYPE_DOMAIN() { return 0x000E; }
+  static get INDEX_DATA_TYPE_INTEGER24() { return 0x0010; }
+  static get INDEX_DATA_TYPE_REAL64() { return 0x0011; }
+  static get INDEX_DATA_TYPE_INTEGER40() { return 0x0012; }
+  static get INDEX_DATA_TYPE_INTEGER48() { return 0x0013; }
+  static get INDEX_DATA_TYPE_INTEGER56() { return 0x0014; }
+  static get INDEX_DATA_TYPE_INTEGER64() { return 0x0015; }
+  static get INDEX_DATA_TYPE_UNSIGNED24() { return 0x0016; }
+  static get INDEX_DATA_TYPE_UNSIGNED40() { return 0x0017; }
+  static get INDEX_DATA_TYPE_UNSIGNED48() { return 0x0018; }
+  static get INDEX_DATA_TYPE_UNSIGNED56() { return 0x0019; }
+  static get INDEX_DATA_TYPE_UNSIGNED64() { return 0x001A; }
+}
+
+class CanOpenProtoObject {
   static get ACCESS_TYPE_RO() { return "ro"; }
   static get ACCESS_TYPE_WO() { return "wo"; }
   static get ACCESS_TYPE_RW() { return "rw"; }
   static get ACCESS_TYPE_RWR() { return "rwr"; }
   static get ACCESS_TYPE_RWW() { return "rww"; }
   static get ACCESS_TYPE_CONST() { return "const"; }
+
+  static get OBJECT_TYPE_NULL() { return 0; }
+  static get OBJECT_TYPE_DOMAIN() { return 2; }
+  static get OBJECT_TYPE_DEFTYPE() { return 5; }
+  static get OBJECT_TYPE_DEFSTRUCT() { return 6; }
+  static get OBJECT_TYPE_VAR() { return 7; }
+  static get OBJECT_TYPE_ARRAY() { return 8; }
+  static get OBJECT_TYPE_RECORD() { return 9; }
+}
+
+class CanOpenObject extends CanOpenProtoObject {
+
 }
 
 class CanOpenSubObject extends CanOpenObject {
+  constructor(...args) {
+    super(...args)
+    this.value = this.default_value
+  }
 
+  get buffer() {
+    switch (this.dataType) {
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_BOOLEAN:
+        return new Uint8Array([this.value & 1]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER8:
+        return new Int8Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER16:
+        return new Int16Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER24:
+        return ArrayBuffer.transfer(new Int32Array([this.value]).buffer, 3);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER32:
+        return new Int32Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER40:
+        return ArrayBuffer.transfer(new BigInt64Array([this.value]).buffer, 5);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER48:
+        return ArrayBuffer.transfer(new BigInt64Array([this.value]).buffer, 6);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER56:
+        return ArrayBuffer.transfer(new BigInt64Array([this.value]).buffer, 7);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER64:
+        return new BigInt64Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED8:
+        return new Uint8Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED16:
+        return new Uint16Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED24:
+        return ArrayBuffer.transfer(new Uint32Array([this.value]).buffer, 3);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED32:
+        return new Uint32Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED40:
+        return ArrayBuffer.transfer(new BigUint64Array([this.value]).buffer, 5);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED48:
+        return ArrayBuffer.transfer(new BigUint64Array([this.value]).buffer, 6);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED56:
+        return ArrayBuffer.transfer(new BigUint64Array([this.value]).buffer, 7);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED64:
+        return new BigUint64Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_REAL32:
+        return new Float32Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_REAL64:
+        return new Float64Array([this.value]).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_VISIBLE_STRING:
+        return new Uint8Array(this.value.split("").map(c => c.charCodeAt(0))).buffer;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNICODE_STRING:
+        return new Uint16Array(this.value.split("").map(c => c.charCodeAt(0))).buffer;
+      default:
+        return new Uint8Array(this.value).buffer;
+    }
+  }
+
+  from(buffer) {
+    switch (this.dataType) {
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_BOOLEAN:
+        return new Uint8Array(buffer)[0] && true;
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER8:
+        return new Int8Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER16:
+        return new Int16Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER24:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER32:
+        return new Int32Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER40:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER48:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER56:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_INTEGER64:
+        return new BigInt64Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED8:
+        return new Uint8Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED16:
+        return new Uint16Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED24:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED32:
+        return new Uint32Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED40:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED48:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED56:
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNSIGNED64:
+        return new BigUint64Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_REAL32:
+        return new Float32Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_REAL64:
+        return new Float64Array(buffer)[0];
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_VISIBLE_STRING:
+        return Array.from(new Uint8Array(buffer)).map(String.charCodeFrom).join("");
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNICODE_STRING:
+        return Array.from(new Uint16Array(buffer)).map(String.charCodeFrom).join("");
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_TIME_OF_DAY:
+        return CanOpenTimeOfDay.from(buffer);
+      case CanOpenObjectDictionary.INDEX_DATA_TYPE_TIME_DIFFERENCE:
+        return CanOpenTimeDifference.from(buffer);
+      default:
+        return buffer;
+    }
+  }
 }
 
 class CanOpenNode {

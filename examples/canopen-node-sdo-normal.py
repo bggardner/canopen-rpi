@@ -1,5 +1,7 @@
 #!/usr/bin/python3
+from datetime import datetime, timedelta
 import logging
+import os
 import signal
 
 import socketcan
@@ -59,6 +61,20 @@ socketcanopen_od = socketcanopen.ObjectDictionary({
             )
         }
     ),
+    0x1021: socketcanopen.Object(
+        parameter_name="Store EDS",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_DOMAIN,
+        default_value=bytes(open(os.path.dirname(os.path.abspath(__file__)) + "/node.eds", "r").read(), "ascii")
+    ),
+    0x1022: socketcanopen.Object(
+        parameter_name="Store format",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
+        default_value=0x00
+    ),
     socketcanopen.ODI_SDO_SERVER: socketcanopen.Object(
         parameter_name="SDO server parameter",
         object_type=socketcanopen.ObjectType.RECORD,
@@ -88,18 +104,116 @@ socketcanopen_od = socketcanopen.ObjectDictionary({
         }
     ),
     0x2000: socketcanopen.Object(
-        parameter_name="RO test",
+        parameter_name="UNSIGNED64 RO test",
         object_type=socketcanopen.ObjectType.VAR,
         access_type=socketcanopen.AccessType.RO,
         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED64,
         default_value=0x0123456780987654
     ),
     0x2001: socketcanopen.Object(
-        parameter_name="RW test",
+        parameter_name="UNSIGNED64 RW test",
         object_type=socketcanopen.ObjectType.VAR,
         access_type=socketcanopen.AccessType.RW,
         data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED64,
         default_value=0x4523018967452301
+    ),
+    0x2002: socketcanopen.Object(
+        parameter_name="VISIBLE_STRING RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_VISIBLE_STRING,
+        default_value="Hello world (read only)"
+    ),
+    0x2003: socketcanopen.Object(
+        parameter_name="VISIBLE_STRING RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_VISIBLE_STRING,
+        default_value="Hello world (read/write)"
+    ),
+    0x2004: socketcanopen.Object(
+        parameter_name="UNICODE_STRING RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_UNICODE_STRING,
+        default_value="Hello world (read only)"
+    ),
+    0x2005: socketcanopen.Object(
+        parameter_name="UNICODE_STRING RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_UNICODE_STRING,
+        default_value="Hello world (read/write)"
+    ),
+    0x2006: socketcanopen.Object(
+        parameter_name="OCTET_STRING RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_OCTET_STRING,
+        default_value=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    ),
+    0x2007: socketcanopen.Object(
+        parameter_name="OCTET_STRING RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_OCTET_STRING,
+        default_value=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    ),
+    0x2008: socketcanopen.Object(
+        parameter_name="DOMAIN RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_DOMAIN,
+        default_value=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    ),
+    0x2009: socketcanopen.Object(
+        parameter_name="DOMAIN RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_DOMAIN,
+        default_value=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    ),
+    0x200A: socketcanopen.Object(
+        parameter_name="TIME_OF_DAY RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_TIME_OF_DAY,
+        default_value=datetime.today()
+    ),
+    0x200B: socketcanopen.Object(
+        parameter_name="TIME_OF_DAY RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_TIME_OF_DAY,
+        default_value=datetime.today()
+    ),
+    0x200C: socketcanopen.Object(
+        parameter_name="TIME_DIFFERENCE RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_TIME_DIFFERENCE,
+        default_value=timedelta(1, 2, 3, 4)
+    ),
+    0x200D: socketcanopen.Object(
+        parameter_name="TIME_DIFFERENCE RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_TIME_DIFFERENCE,
+        default_value=timedelta(1, 2, 3, 4)
+    ),
+    0x200E: socketcanopen.Object(
+        parameter_name="REAL64 RO test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RO,
+        data_type=socketcanopen.ODI_DATA_TYPE_REAL64,
+        default_value=3.14159265359
+    ),
+    0x200F: socketcanopen.Object(
+        parameter_name="REAL64 RW test",
+        object_type=socketcanopen.ObjectType.VAR,
+        access_type=socketcanopen.AccessType.RW,
+        data_type=socketcanopen.ODI_DATA_TYPE_REAL64,
+        default_value=3.14159265359
     )
 })
 
