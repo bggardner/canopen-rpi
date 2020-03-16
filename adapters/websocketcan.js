@@ -33,18 +33,6 @@ class WebSocketCan extends WebSocket {
   }
 
   /**
-   * Dispatches an Event to the WebSocket, casting MessageEvent data (a CanMessage) to a byte array
-   * @param {Event} event - The event to be dispatched
-   * @returns {boolean}
-   */
-  dispatchEvent(event) {
-    if (event.type == "message") {
-      event.data = new Uint8Array(event.data).buffer;
-    }
-    return super.dispatchEvent(event);
-  }
-
-  /**
   * Removes an event listener previously registered with addEventListener().
   * @param {string} type - A string which specifies the type of event for which to remove an event listener.
   * @param {object} listener - The EventListener function of the event handler to remove from the event target.
@@ -66,21 +54,14 @@ class WebSocketCan extends WebSocket {
   }
 
   /**
-   * Enqueues the specified CanMessage to be transmitted to the server over the WebSocket connection.
-   * @param {CanMessage} msg - The CanMessage to send to the server.
-   */
-  send(msg) {
-    super.send(new Uint8Array(msg).buffer);
-  }
-
-  /**
-   * Casts a CanMessage from MessageEvent data and passes it to handleMessageEvent()
+   * Re-casts a MessageEvent with CanMessage data and passes it to handleMessageEvent()
    * @protected
    * @param {MessageEvent} event
    */
   messageEventHandler(event) {
+    // MessageEvent.data is read-only, must re-cast
     let init = Object.assign({}, event);
-    init.data = CanMessage.from(new Uint8Array(event.data));
+    init.data = CanMessage.from(event.data);
     event = new MessageEvent(event.type, init);
     this.handleMessageEvent(event);
   }
@@ -102,67 +83,44 @@ class WebSocketCan extends WebSocket {
   }
 }
 
-/** Class for sending data on a WebSocketCan */
-class CanMessage {
+/**
+   * Class for sending data on a WebSocketCan.  Must extend data type passed to Websocket.send().
+   * @extends Uint8Array
+   */
+class CanMessage extends Uint8Array {
   /**
    * Create a new CanMessage.
    * @param {number} arbitrationId - CAN frame abritration ID
-   * @param {TypedArray} data - CAN frame data bytes
+   * @param {iterable.<number>} [data=new ArrayBuffer()] - CAN frame data bytes
    * @param {boolean} eff - CAN frame Extended Frame Format flag
    * @param {boolean} rtr - CAN frame Remote Transmission Request flag
    * @param {boolean} err - CAN error frame flag
    */
-  constructor(arbitrationId, data=[], eff=false, rtr=false, err=false) {
-    this.arbitrationId = parseInt(arbitrationId);
-    this.data = data;
-    this.eff = Boolean(eff);
-    this.rtr = Boolean(rtr);
+  constructor(arbitrationId, data=new ArrayBuffer(), eff=false, rtr=false, err=false) {
+    let dataView = new DataView(new ArrayBuffer(16));
+    dataView.setUint32(0, arbitrationId + (err << 29) + (rtr << 30) + (eff << 31), true);
+    data = new Uint8Array(data);
+    dataView.setUint32(4, data.byteLength, true);
+    super(dataView.buffer)
+    this.set(data, 8);
   }
 
-  [Symbol.iterator]() { // For converting to a byte array in SocketCAN format
-    let message = this;
-    return {
-      next() {
-        switch(this.cursor_++) {
-          case 0:
-            return {value: (message.arbitrationId >> 0) & 0xFF, done: false};
-          case 1:
-            return {value: (message.arbitrationId >> 8) & 0xFF, done: false};
-          case 2:
-            return {value: (message.arbitrationId >> 16) & 0xFF, done: false};
-          case 3:
-            return {value: ((message.arbitrationId >> 24) & 0x1F) + (+message.eff << 7) + (+message.rtr << 6) + (+message.err << 5), done: false};
-          case 4:
-            return {value: message.data.length, done: false};
-          case 5:
-          case 6:
-          case 7:
-            return {value: 0, done: false};
-          case 8:
-          case 9:
-          case 10:
-          case 11:
-          case 12:
-          case 13:
-          case 14:
-          case 15:
-            return {value: message.data[this.cursor_ - 9] == undefined ? 0 : message.data[this.cursor_ - 9], done: false};
-          case 16:
-            this.cursor_ = 0;
-            return {done: true};
-          default:
-        }
-      },
-      cursor_: 0
-    }
-  }
+  get arbitrationId() { return new Uint32Array(this.buffer.slice(0, 4))[0] & 0x1FFFFFFF; }
+  get data() { return new Uint8Array(this.buffer.slice(8, 8 + this.dlc)); }
+  get dlc() { return this[4]; }
+  get eff() { return Boolean(this[3] & 0x80); }
+  get err() { return Boolean(this[3] & 0x20); }
+  get rtr() { return Boolean(this[3] & 0x40); }
 
   /**
    * Factory function for converting raw bytes to a CanMessage instance.
-   * @param {Uint8Array} byteArray - Byte array from the raw WebSocket message data
+   * @param {ArrayBuffer} buffer - Byte array from the raw WebSocket message data
    * @returns {CanMessage}
    */
-  static from(byteArray) { // Factory from SocketCAN-formatted byte array
+  static from(buffer) { // Factory from SocketCAN-formatted byte array
+      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength != 16) { throw "Argument must be an ArrayBuffer of length 16"; }
+      let byteArray = new Uint8Array(buffer);
+      if ((byteArray[4] & 0xF0) != 0 || byteArray[5] != 0 || byteArray[6] != 0 || byteArray[7] != 0) { throw "Malformed SocketCAN message"; }
       let arbitrationId = byteArray[0];
       arbitrationId += byteArray[1] << 8;
       arbitrationId += byteArray[2] << 16;

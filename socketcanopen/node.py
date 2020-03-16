@@ -615,7 +615,7 @@ class Node:
                                 blksize = 127
                                 data = struct.pack("<BBB5x", (SDO_SCS_BLOCK_DOWNLOAD << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_RESPONSE, ackseq, blksize)
                             else:
-                                if ccs in [SDO_CCS_DOWNLOAD_INITIATE, SDO_CCS_UPLOAD_INITIATE] or (ccs == SDO_CCS_BLOCK_DOWNLOAD and (data[0] & 0x1) == SDO_BLOCK_SUBCOMMAND_INITIATE) or (ccs == SDO_CCS_BLOCK_UPLOAD and (data[0] & 0x03) == SDO_BLOCK_SUBCOMMAND_INITIATE):
+                                if ccs in [SDO_CS_ABORT, SDO_CCS_DOWNLOAD_INITIATE, SDO_CCS_UPLOAD_INITIATE] or (ccs == SDO_CCS_BLOCK_DOWNLOAD and (data[0] & 0x1) == SDO_BLOCK_SUBCOMMAND_INITIATE) or (ccs == SDO_CCS_BLOCK_UPLOAD and (data[0] & 0x03) == SDO_BLOCK_SUBCOMMAND_INITIATE):
                                     odi = (data[2] << 8) + data[1]
                                     odsi = data[3]
                                     if odi in self.od:
@@ -627,7 +627,7 @@ class Node:
                                     else:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_OBJECT_DNE)
                                 if ccs == SDO_CS_ABORT:
-                                    logger.info("SDO aborted.")
+                                    logger.info("SDO abort request for mux 0x{:02X}{:04X}".format(odi, odsi))
                                     self._sdo_cs = None
                                     self._sdo_data = None
                                     self._sdo_len = None
@@ -637,6 +637,7 @@ class Node:
                                     self._sdo_t = None
                                     return
                                 elif ccs == SDO_CCS_DOWNLOAD_INITIATE:
+                                    logger.info("SDO download initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
                                     if subobj.access_type in [AccessType.RO, AccessType.CONST]:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_RO)
                                     scs = SDO_SCS_DOWNLOAD_INITIATE
@@ -658,6 +659,8 @@ class Node:
                                         self._sdo_odsi = odsi
                                         self._sdo_t = 0
                                         self._sdo_len = int.from_bytes(data[4:8], byteorder="little")
+                                        if self._sdo_len == 0:
+                                            raise SdoAbort(odi, odsi, SDO_ABORT_PARAMETER_LENGTH)
                                         self._sdo_data = []
                                         self._sdo_data_type = data_type_index
                                     else: # e == 0, s == 0 is reserved
@@ -691,6 +694,7 @@ class Node:
                                     if self._sdo_data is None:
                                         logger.error("SDO Download Segment Request aborted, initate not received or aborted")
                                         raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
+                                    logger.info("SDO download segment request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
                                     scs = SDO_SCS_DOWNLOAD_SEGMENT
                                     t = (data[0] >> SDO_T_BITNUM) & 1
                                     if self._sdo_t != t:
@@ -714,6 +718,7 @@ class Node:
                                         self._sdo_t = None
                                     data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM))
                                 elif ccs == SDO_CCS_UPLOAD_INITIATE:
+                                    logger.info("SDO upload initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
                                     if subobj.access_type == AccessType.WO:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_WO)
                                     if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
@@ -749,6 +754,7 @@ class Node:
                                     if self._sdo_data is None:
                                         logger.error("SDO upload initiate request aborted, initiate not received or aborted")
                                         raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
+                                    logger.info("SDO upload segment request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
                                     scs = SDO_SCS_UPLOAD_SEGMENT
                                     t = (data[0] >> SDO_T_BITNUM) & 1
                                     if self._sdo_t != t:
@@ -768,7 +774,7 @@ class Node:
                                         self._sdo_len = None
                                         self._sdo_t = None
                                         c = 1
-                                    data = struct.pack("<B{}s".format(len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
+                                    data = struct.pack("<B{}s{}x".format(len(sdo_data), 7 - len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
                                 elif ccs == SDO_CCS_BLOCK_DOWNLOAD:
                                     scs = SDO_SCS_BLOCK_DOWNLOAD
                                     cs = data[0] & 0x01
@@ -782,6 +788,8 @@ class Node:
                                         s = (data[0] >> 1) & 0x01
                                         if s == 1:
                                             size = int.from_bytes(data[4:8], byteorder="little")
+                                            if size == 0:
+                                                raise SdoAbort(odi, odsi, SDO_ABORT_PARAMETER_LENGTH)
                                             if size > 127:
                                                 blksize = 127
                                             else:
@@ -910,6 +918,7 @@ class Node:
                                             return
                                     else: # SDO_BLOCK_SUBCOMMAND_END
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
+                                            logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
                                         logger.info("SDO block upload end request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
                                         self._sdo_cs = None
@@ -921,9 +930,9 @@ class Node:
                                         self._sdo_t = None
                                         return
                                 else:
-                                    logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
                                     raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS)
                         except SdoAbort as a:
+                            logger.error("SDO aborted for mux 0x{:04X}{:02X} with error code 0x{:08X}".format(a.index, a.subindex, a.code))
                             self._sdo_seqno = 0
                             self._sdo_data = None
                             self._sdo_len = None
@@ -1107,6 +1116,7 @@ class Node:
 
     @nmt_state.setter
     def nmt_state(self, nmt_state):
+        logger.info("Entering NMT state with value 0x{:02X}".format(nmt_state))
         self._nmt_state = nmt_state
         try:
             self._run_indicator.set_state(nmt_state)

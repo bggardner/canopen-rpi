@@ -725,9 +725,9 @@ class SubObject(ProtoObject):
             ]:
             return int.from_bytes(b, byteorder='little')
         if self.data_type == ODI_DATA_TYPE_REAL32:
-            return struct.unpack("<f", b)
+            return struct.unpack("<f", bytes(b))[0]
         if self.data_type == ODI_DATA_TYPE_REAL64:
-            return struct.unpack("<d", b)
+            return struct.unpack("<d", bytes(b))[0]
         if self.data_type == ODI_DATA_TYPE_VISIBLE_STRING:
             return bytes(b).decode('ascii')
         if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:

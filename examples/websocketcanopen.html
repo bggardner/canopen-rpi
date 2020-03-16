@@ -27,13 +27,67 @@ button {
 </head>
 <body>
 <label for="url">URL</label><input id="url" type="text" placeholder="ws://server:port"><button id="connect">Connect</button><br>
+<h2>NMT</h2><hr>
+<label for="nmt-node-id">Node ID</label><input id="nmt-node-id" type="number" min="0" max="127" step="1" value="0">
+<label for="nmt-cmd">Command</label><select id="nmt-cmd">
+<option value="1">Start</option>
+<option value="2">Stop</option>
+<option value="128">Enter Pre-Operational</option>
+<option value="129">Reset Node</option>
+<option value="130">Reset Communication</option>
+</select>
+<button id="nmt-send" class="send" disabled>Send</button>
+<table id="nodes">
+  <caption>Heartbeats</caption>
+  <thead>
+    <tr>
+      <th>Node ID</th>
+      <th>NMT State</th>
+      <th>Timestamp</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<h2>SYNC</h2><hr>
+<button id="sync-send" class="send" disabled>Send</button>
+<span id="sync-rx">No SYNC messages received.</span>
+<h2>TIME</h2><hr>
+<button id="time-send" class="send" disabled>Send</button>
+<span id="time-rx">No TIME messages received.</span>
+<h2>EMCY</h2><hr>
+<table id="emcy">
+  <thead>
+    <tr>
+      <th>Node ID</th>
+      <th>EEC</th>
+      <th>ER</th>
+      <th>MSEF</th>
+      <th>Timestamp</th>
+    </tr>
+  </thead>
+  <tbody>
+  </tbody>
+</table>
+<h2>PDO</h2><hr>
+<table id="pdo">
+  <thead>
+    <tr>
+      <th>Node ID</th>
+      <th>Type</th>
+      <th>#</th>
+      <th>Data</th>
+      <th>Timestamp</th>
+    </tr>
+  </thead>
+  <tbody>
+  </tbody>
+</table>
 <h2>SDO</h2><hr>
-<label>Handler</label><input type="radio" name="sdo-handler" value="manual" checked>Manual&nbsp;&nbsp;&nbsp;<input type="radio" name="sdo-handler" value="client">CanOpenSdoClient<br> 
 <label for="sdo-node-id">Node ID</label><input id="sdo-node-id" type="number" min="1" max="127" step="1"><br>
 <label for="sdo-index">Index</label><input id="sdo-index"><br>
 <label for="sdo-subindex">Sub-Index</label><input id="sdo-subindex"><br>
 <label>Type</label><input type="radio" name="sdo-type" value="upload" checked>Upload&nbsp;&nbsp;&nbsp;<input type="radio" name="sdo-type" value="download">Download<br> 
-<label for="sdo-value">Value</label><input id="sdo-value" disabled><br>
+<label for="sdo-value">Value</label><input id="sdo-value" type="number" min="0" max="4294967295" step="1" disabled>
 <button id="sdo-send" class="send" disabled>Send</button><br>
 <label for="sdo-response">Response</label><span id="sdo-response"></span>
 <script>
@@ -41,6 +95,7 @@ window.addEventListener("DOMContentLoaded", event => {
   document.querySelectorAll('[name="sdo-type"]').forEach(element => {
     element.addEventListener("change", event => {
       if (element.value == "upload") {
+        document.querySelector("#sdo-value").value = "";
         document.querySelector("#sdo-value").disabled = true;
       } else {
         document.querySelector("#sdo-value").disabled = false;
@@ -49,8 +104,7 @@ window.addEventListener("DOMContentLoaded", event => {
   });
 
   let ws;
-  let sdoClient, sdoNodeId, sdoIndex, sdoSubIndex;
-  document.querySelector("#connect").addEventListener("click", (event) => {
+  document.querySelector("#connect").addEventListener("click", event => {
     let connectButton = document.querySelector("#connect");
     if (connectButton.innerHTML == "Connect") {
       let url = document.querySelector("#url");
@@ -63,80 +117,99 @@ window.addEventListener("DOMContentLoaded", event => {
       url.disabled = true;
       connectButton.innerHTML = "Connecting...";
       ws = new WebSocketCanOpen(wsUrl);
-      ws.addEventListener("error", (event) => {
+      ws.addEventListener("error", event => {
         alert("Connection error");
       });
-      ws.addEventListener("open", (event) => {
+      ws.addEventListener("open", event => {
         document.querySelectorAll(".send").forEach(element => { element.disabled = false; });
         connectButton.innerHTML = "Disconnect";
         connectButton.disabled = false;
       });
-      ws.addEventListener("close", (event) => {
+      ws.addEventListener("close", event => {
         document.querySelectorAll(".send").forEach(element => { element.disabled = false; });
         url.disabled = false;
         connectButton.innerHTML = "Connect";
         connectButton.disabled = false;
       });
-      ws.addEventListener("message", (event) => {
+      ws.addEventListener("message", event => {
         let msg = event.data;
+        let pdo;
         switch (msg.functionCode) {
           case CanOpenMessage.FUNCTION_CODE_NMT:
             break;
           case CanOpenMessage.FUNCTION_CODE_SYNC:
+            if (msg.nodeId == 0) { // SYNC
+              let counter = "no counter";
+              if (msg.data.length) {
+                counter = "counter value of " + msg.data[0];
+              }
+              document.querySelector("#sync-rx").innerHTML = "Received " + event.timeStamp.toFixed(0) + " ms from page load with " + counter;
+            } else if (msg.data.length == 8) { // EMCY
+              let nodeRows = document.querySelectorAll("#emcy tbody tr");
+              let msef = new Uint8Array(8);
+              msef.set(msg.data.slice(3, 8));
+              msef = new BigUint64Array(msef.buffer)[0];
+              for (i = 0; i < nodeRows.length; i++) {
+                if (parseInt(nodeRows[i].querySelector("td").innerHTML) == msg.nodeId) {
+                  nodeRows[i].querySelector("td:nth-child(2)").innerHTML = "0x" + new Uint16Array(msg.data.slice(0, 2).buffer)[0].toString(16).toUpperCase().padStart(4, "0");
+                  nodeRows[i].querySelector("td:nth-child(3)").innerHTML = "0x" + msg.data[2].toString(16).toUpperCase().padStart(2, "0");
+                  nodeRows[i].querySelector("td:nth-child(4)").innerHTML = "0x" + msef.toString(16).toUpperCase().padStart(10, "0");
+                  nodeRows[i].querySelector("td:last-child").innerHTML = event.timeStamp.toFixed(0);
+                  return;
+                }
+              }
+              document.querySelector("#emcy tbody").innerHTML += `
+<tr>
+  <td>${msg.nodeId}</td>
+  <td>0x${new Uint16Array(msg.data.slice(0, 2).buffer)[0].toString(16).toUpperCase().padStart(4, "0")}</td>
+  <td>0x${msg.data[2].toString(16).toUpperCase().padStart(2, "0")}</td>
+  <td>0x${msef.toString(16).toUpperCase().padStart(10, "0")}</td>
+  <td>${event.timeStamp.toFixed(0)}</td></tr>`;
+            }
             break;
           case CanOpenMessage.FUNCTION_CODE_TIME:
+            document.querySelector("#time-rx").innerHTML = CanOpenTimeOfDay.from(msg.data).toDate() + " received " + event.timeStamp.toFixed(0) + " ms from page load";
             break;
           case CanOpenMessage.FUNCTION_CODE_RPDO1:
-            break;
+            pdo = pdo || {type: "R", number: 1};
           case CanOpenMessage.FUNCTION_CODE_TPDO1:
-            break;
+            pdo = pdo || {type: "T", number: 1};
           case CanOpenMessage.FUNCTION_CODE_RPDO2:
-            break;
+            pdo = pdo || {type: "R", number: 2};
           case CanOpenMessage.FUNCTION_CODE_TPDO2:
-            break;
+            pdo = pdo || {type: "T", number: 2};
           case CanOpenMessage.FUNCTION_CODE_RPDO3:
-            break;
+            pdo = pdo || {type: "R", number: 3};
           case CanOpenMessage.FUNCTION_CODE_TPDO3:
-            break;
+            pdo = pdo || {type: "T", number: 3};
           case CanOpenMessage.FUNCTION_CODE_RPDO4:
-            break;
+            pdo = pdo || {type: "R", number: 4};
           case CanOpenMessage.FUNCTION_CODE_TPDO4:
+            pdo = pdo || {type: "T", number: 4};
+            let pdoRows = document.querySelectorAll("#pdo tbody tr");
+            for (i = 0; i < pdoRows.length; i++) {
+              if (pdoRows[i].querySelector("td:first-child").innerHTML == msg.nodeId && pdoRows[i].querySelector("td:nth-child(2)").innerHTML == pdo.type + "PDO" && pdoRows[i].querySelector("td:nth-child(3)").innerHTML == pdo.number) {
+                pdoRows[i].querySelector("td:nth-child(4)").innerHTML = Array.from(msg.data).map(x => "0x" + x.toString(16).padStart(2, "0")).join(", ");
+                pdoRows[i].querySelector("td:nth-child(5)").innerHTML = event.timeStamp.toFixed(0);
+                return;
+              }
+            }
+            document.querySelector("#pdo tbody").innerHTML += `<tr><td>${msg.nodeId}</td><td>${pdo.type}PDO</td><td>${pdo.number}</td><td>${Array.from(msg.data).map(x => "0x" + x.toString(16).padStart(2, "0")).join(", ")}</td><td>${event.timeStamp.toFixed(0)}</td></tr>`;
             break;
           case CanOpenMessage.FUNCTION_CODE_SDO_TX:
-            if (sdoClient != undefined) { break; }
-            if (msg.nodeId != sdoNodeId) { break; }
-            let cs = msg.data[0] >> CanOpenSdoMessage.CS_BITNUM;
-            switch (cs) {
-              case CanOpenSdoMessage.SCS_DOWNLOAD_INITIATE:
-                document.querySelector("#sdo-response").innerHTML = "Download successful."
-                break;
-              case CanOpenSdoMessage.SCS_DOWNLOAD_SEGMENT:
-                break;
-              case CanOpenSdoMessage.SCS_UPLOAD_INITIATE:
-                let s = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.S_BITNUM) & 0x1;
-                let e = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.E_BITNUM) & 0x1;
-                let n = 0;
-                if (s) { n = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.N_BITNUM) & 0x3; }
-                document.querySelector("#sdo-value").value = new Uint32Array(msg.data.slice(4, 8 - n).buffer)[0];
-                if (e) {
-                  document.querySelector("#sdo-response").innerHTML = "Expedited upload successful.";
-                } else {
-                  document.querySelector("#sdo-response").innerHTML = "Normal upload available, value is size.";
-                  ws.send(new CanOpenSdoAbortRequest(sdoNodeId, sdoIndex, sdoSubIndex, CanOpenSdoAbortRequest.ABORT_GENERAL));
-                }
-                break;
-              case CanOpenSdoMessage.SCS_UPLOAD_SEGMENT:
-                break;
-              case CanOpenSdoMessage.CS_ABORT:
-                document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + new Uint32Array(msg.data.slice(4, 8).buffer)[0].toString(16).padStart(8, "0");
-                break;
-              default:
-            }
             break;
           case CanOpenMessage.FUNCTION_CODE_SDO_RX:
             break;
           case CanOpenMessage.FUNCTION_CODE_NMT_ERROR_CONTROL:
-            break;
+            let nodeRows = document.querySelectorAll("#nodes tbody tr");
+            for (i = 0; i < nodeRows.length; i++) {
+              if (parseInt(nodeRows[i].querySelector("td").innerHTML) == msg.nodeId) {
+                nodeRows[i].querySelector("td:nth-child(2)").innerHTML = "0x" + msg.data[0].toString(16).toUpperCase().padStart(2, "0");
+                nodeRows[i].querySelector("td:last-child").innerHTML = event.timeStamp.toFixed(0);
+                return;
+              }
+            }
+            document.querySelector("#nodes tbody").innerHTML += `<tr><td>${msg.nodeId}</td><td>0x${msg.data[0].toString(16).toUpperCase().padStart(2, "0")}</td><td>${event.timeStamp.toFixed(0)}</td></tr>`;
           default:
         }
       });
@@ -148,40 +221,42 @@ window.addEventListener("DOMContentLoaded", event => {
     }
   });
 
-  document.querySelector("#sdo-send").addEventListener("click", (event) => {
+  document.querySelector("#nmt-send").addEventListener("click", event => {
+    let cs = parseInt(document.querySelector("#nmt-cmd").options[document.querySelector("#nmt-cmd").selectedIndex].value);
+    let nodeId = parseInt(document.querySelector("#nmt-node-id").value);
+    ws.send(new CanOpenNmtNodeControlMessage(cs, nodeId));
+  });
+
+  document.querySelector("#sync-send").addEventListener("click", event => {
+    ws.send(new CanOpenSyncMessage());
+  });
+
+  document.querySelector("#time-send").addEventListener("click", event => {
+    let cs = parseInt(document.querySelector("#nmt-cmd").options[document.querySelector("#nmt-cmd").selectedIndex].value);
+    let nodeId = parseInt(document.querySelector("#nmt-node-id").value);
+    ws.send(new CanOpenTimeMessage(CanOpenTimeOfDay.fromDate(new Date())));
+  });
+
+  document.querySelector("#sdo-send").addEventListener("click", event => {
     document.querySelector("#sdo-response").innerHTML = "Please wait...";
     sdoNodeId = parseInt(document.querySelector("#sdo-node-id").value);
     sdoIndex = parseInt(document.querySelector("#sdo-index").value);
     sdoSubIndex = parseInt(document.querySelector("#sdo-subindex").value);
-    if (document.querySelector('[name="sdo-handler"][value="manual"]').checked) {
-      let msg;
-      if (document.querySelector("#sdo-value").disabled) {
-          msg = new CanOpenSdoUploadInitiateRequest(sdoNodeId, sdoIndex, sdoSubIndex);
-      } else {
-          msg = new CanOpenSdoDownloadInitiateRequest(sdoNodeId, 0, 1, 0, sdoIndex, sdoSubIndex, new Uint32Array([parseInt(document.querySelector("#sdo-value").value)]));
-      }
-      ws.send(msg);
+    let sdoClient = new CanOpenSdoClient(ws);
+    if (document.querySelector("#sdo-value").disabled) {
+      sdoClient.upload(sdoNodeId, sdoIndex, sdoSubIndex).then(response => {
+        document.querySelector("#sdo-value").value = new Uint32Array(response)[0];
+        document.querySelector("#sdo-response").innerHTML = "Upload successful.";
+      }).catch(error => {
+        document.querySelector("#sdo-value").value = error;
+        document.querySelector("#sdo-response").innerHTML = "Abort received.";      
+      });
     } else {
-      sdoClient = new CanOpenSdoClient(ws);
-      if (document.querySelector("#sdo-value").disabled) {
-        sdoClient.upload(sdoNodeId, sdoIndex, sdoSubIndex).then(response => {
-          document.querySelector("#sdo-value").value = new Uint32Array([response.buffer])[0];
-          document.querySelector("#sdo-response").innerHTML = "Upload successful.";
-          sdoClient = undefined;
-        }).catch(error => {
-          document.querySelector("#sdo-value").value = response;
-          document.querySelector("#sdo-response").innerHTML = "Abort received.";      
-          sdoClient = undefined;
-        });
-      } else {
-        sdoClient.download(sdoNodeId, sdoIndex, sdoSubIndex, new Uint32Array([parseInt(document.querySelector("#sdo-value").value)])).then(response => {
-          document.querySelector("#sdo-response").innerHTML = "Download successful.";
-          sdoClient = undefined;
-        }).catch(error => {
-          document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + error.toString(16).padStart(8, "0");
-          sdoClient = undefined;
-        });
-      }
+      sdoClient.download(sdoNodeId, sdoIndex, sdoSubIndex, new Uint32Array([parseInt(document.querySelector("#sdo-value").value)])).then(response => {
+        document.querySelector("#sdo-response").innerHTML = "Download successful.";
+      }).catch(error => {
+        document.querySelector("#sdo-response").innerHTML = "Abort received: 0x" + error.toString(16).padStart(8, "0");
+      });
     }
   });
 });
