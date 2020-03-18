@@ -1266,9 +1266,9 @@ class CanOpenSubObject extends CanOpenObject {
       case CanOpenObjectDictionary.INDEX_DATA_TYPE_REAL64:
         return new Float64Array(buffer)[0];
       case CanOpenObjectDictionary.INDEX_DATA_TYPE_VISIBLE_STRING:
-        return Array.from(new Uint8Array(buffer)).map(String.charCodeFrom).join("");
+        return new TextDecoder("ascii").decode(buffer);
       case CanOpenObjectDictionary.INDEX_DATA_TYPE_UNICODE_STRING:
-        return Array.from(new Uint16Array(buffer)).map(String.charCodeFrom).join("");
+        return new TextDecoder("utf-16").decode(buffer);
       case CanOpenObjectDictionary.INDEX_DATA_TYPE_TIME_OF_DAY:
         return CanOpenTimeOfDay.from(buffer);
       case CanOpenObjectDictionary.INDEX_DATA_TYPE_TIME_DIFFERENCE:
