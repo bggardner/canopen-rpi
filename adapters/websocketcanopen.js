@@ -659,6 +659,9 @@ const CanOpenSdoAbortMixIn = superclass => class extends superclass {
   static get ABORT_TOGGLE() { return 0x05030000; }
   static get ABORT_TIMEOUT() { return 0x05040000; }
   static get ABORT_INVALID_CS() { return 0x05040001; }
+  static get ABORT_INVALID_BLKSIZE() { return 0x05040002; }
+  static get ABORT_INVALID_SEQNO() { return 0x05040003; }
+  static get ABORT_CRC_ERROR() { return 0x05040004; }
   static get ABORT_WO() { return 0x06010001; }
   static get ABORT_RO() { return 0x06010002; }
   static get ABORT_OBJECT_DNE() { return 0x06020000; }
