@@ -73,7 +73,10 @@ class CanOpenSdoClient extends EventTarget {
    * @param {CustomEvent} event
    */
   end_(event) {
-    delete this.transaction;
+    if (this.hasOwnProperty("transaction")) {
+      clearTimeout(this.transaction.timer);
+      delete this.transaction;
+    }
     if (this.ws.readyState == WebSocket.OPEN) {
       this.ws.removeEventListener("message", this.listener_);
     }
@@ -160,7 +163,7 @@ class CanOpenSdoClient extends EventTarget {
       let n = 0;
       if (s) { n = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.N_BITNUM) & 0x3; }
       let e = (msg.data[0] >> CanOpenSdoUploadInitiateResponse.E_BITNUM) & 0x1;
-      let data = new Uint8Array(4);
+      let data = new Uint8Array(4 - n);
       data.set(msg.data.slice(4, 8 - n));
       if (e) {
         this.end_(new CustomEvent("done", {detail: data.buffer}));
