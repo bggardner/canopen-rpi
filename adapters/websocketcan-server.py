@@ -5,7 +5,7 @@ import websockets
 
 
 # Server constants
-DEFAULT_CAN_INTERFACE = "vcan0"
+CAN_INTERFACE = "vcan0"
 WEBSOCKET_SERVER_IP_ADDRESS = "" # Empty string for any address
 WEBSOCKET_SERVER_PORT = 8003
 
@@ -52,7 +52,7 @@ async def websocket_handler(websocket, path):
         task.cancel()
 
 
-can_bus = can.Bus("vcan0", bustype="socketcan")
+can_bus = can.Bus(CAN_INTERFACE, bustype="socketcan")
 websocket_server = websockets.serve(websocket_handler, WEBSOCKET_SERVER_IP_ADDRESS, WEBSOCKET_SERVER_PORT)
 asyncio.get_event_loop().run_until_complete(websocket_server)
 asyncio.get_event_loop().run_forever()
