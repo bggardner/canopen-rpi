@@ -1,4 +1,5 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+import can
 from functools import reduce
 import logging
 from operator import xor
@@ -7,7 +8,6 @@ import signal
 from time import sleep
 from sys import exit
 
-import socketcan
 import socketcanopen
 
 logging.basicConfig(level=logging.DEBUG)
@@ -42,8 +42,8 @@ errled0 = socketcanopen.ErrorIndicator(PIN_ERRLED0)
 runled1 = socketcanopen.Indicator(PIN_RUNLED1, socketcanopen.Indicator.OFF)
 errled1 = socketcanopen.Indicator(PIN_ERRLED1, socketcanopen.Indicator.ON)
 
-default_bus = socketcan.Bus(DEFAULT_CAN_INTERFACE)
-redundant_bus = socketcan.Bus(REDUNDANT_CAN_INTERFACE)
+default_bus = can.Bus(DEFAULT_CAN_INTERFACE, bustype="socketcan")
+redundant_bus = can.Bus(REDUNDANT_CAN_INTERFACE, bustype="socketcan")
 active_bus = default_bus
 
 

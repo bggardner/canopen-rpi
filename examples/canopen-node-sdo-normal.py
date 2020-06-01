@@ -1,17 +1,17 @@
 #!/usr/bin/python3
+import can
 from datetime import datetime, timedelta
 import logging
 import os
 import signal
 
-import socketcan
 import socketcanopen
 
 CAN_INTERFACE = "vcan0"
 
 logging.basicConfig(level=logging.DEBUG)
 
-can_bus = socketcan.Bus(CAN_INTERFACE)
+can_bus = can.Bus(CAN_INTERFACE, bustype="socketcan")
 
 node_id = 0x02
 

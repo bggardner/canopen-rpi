@@ -1,13 +1,12 @@
-#!/usr/bin/python3
-
+#!/usr/bin/env python3
+import can
 import signal
 
-import socketcan
 import socketcanopen
 
 CAN_INTERFACE = "vcan0"
 
-can_bus = socketcan.Bus(CAN_INTERFACE)
+can_bus = can.Bus(CAN_INTERFACE, bustype="socketcan")
 
 node_id = 0x02
 

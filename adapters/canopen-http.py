@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import can
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
@@ -13,7 +14,6 @@ from time import sleep, time
 import traceback
 from urllib.parse import parse_qsl, urlparse
 
-import socketcan
 import socketcanopen
 
 # Server constants
@@ -93,7 +93,7 @@ def parse_net(net):
         net = default_net
     else:
         net = CAN_INTERFACES[int(net) - 1]
-    return socketcan.Bus(net)
+    return can.Bus(net, bustype="socketcan")
 
 def parse_command(command):
     if command[0:2] == 'r/' or command[0:5] == 'read/':
@@ -140,7 +140,7 @@ def parse_int(value, max=sys.maxsize):
         raise ValueError("invalid integer value: " + str(value))
     return int_value
 
-def exec_sdo(bus: socketcan.Bus, request: socketcanopen.SdoRequest, timeout) -> socketcanopen.SdoResponse:
+def exec_sdo(bus: can.BusABC, request: socketcanopen.SdoRequest, timeout) -> socketcanopen.SdoResponse:
     bus.send(request)
     timeout_time = time() + timeout
     dtimeout = timeout
@@ -162,7 +162,7 @@ def exec_sdo(bus: socketcan.Bus, request: socketcanopen.SdoRequest, timeout) -> 
             raise socketcanopen.SdoTimeout # Timeout from select
     raise socketcanopen.SdoTimeout
 
-def read_pdo(bus: socketcan.Bus, nr, timeout):
+def read_pdo(bus: can.BusABC, nr, timeout):
     global rpdos
     rpdo = rpdos.get(nr)
     if rpdo is None:

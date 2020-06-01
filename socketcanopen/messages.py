@@ -1,13 +1,14 @@
+import can
 import struct
 
 from .constants import *
-from . import socketcan
 
 
-class Message(socketcan.Message):
+class Message(can.Message):
     def __init__(self, fc, node_id, data=[]):
         arbitration_id = (fc << FUNCTION_CODE_BITNUM) + node_id
-        super().__init__(arbitration_id, data)
+        data = bytearray(data)
+        super().__init__(arbitration_id=arbitration_id, data=data, is_extended_id=False)
 
     @property
     def function_code(self):
@@ -18,7 +19,7 @@ class Message(socketcan.Message):
         return self.arbitration_id & 0x7F
 
     @classmethod
-    def factory(cls, msg: socketcan.Message):
+    def factory(cls, msg: can.Message):
         fc = (msg.arbitration_id & FUNCTION_CODE_MASK) >> FUNCTION_CODE_BITNUM
         node_id = msg.arbitration_id & 0x7F
         if fc == FUNCTION_CODE_NMT:

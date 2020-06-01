@@ -3,6 +3,7 @@
 # TODO: Check for BUS-OFF before attempting to send
 # TODO: NMT error handler (CiA302-2)
 from binascii import crc_hqx
+import can
 from datetime import datetime, timedelta
 import logging
 import math
@@ -11,7 +12,6 @@ import struct
 from threading import Event, Thread, Timer, enumerate
 from time import sleep, time
 
-import socketcan
 from .constants import *
 from .indicators import *
 from .messages import *
@@ -66,7 +66,7 @@ class Node:
     SDO_TIMEOUT = 0.3
     SDO_ROUND_TRIP_TIME = 222e-6
 
-    def __init__(self, bus: socketcan.Bus, id, od: ObjectDictionary, *args, **kwargs):
+    def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
         self.bus = bus
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
@@ -413,7 +413,7 @@ class Node:
             logger.debug("Entering NMT slave mode")
 
     def _process_err_indicator(self):
-        err_state = self.bus.get_state()
+        err_state = self.bus.state
         self._err_indicator.set_state(err_state)
 
     def _process_heartbeat_producer(self):
@@ -431,7 +431,7 @@ class Node:
             self._heartbeat_producer_timer = IntervalTimer(heartbeat_producer_time, self._send_heartbeat)
             self._heartbeat_producer_timer.start()
 
-    def _process_msg(self, msg: socketcan.Message):
+    def _process_msg(self, msg: can.Message):
         if not self.is_listening:
             return
         can_id = msg.arbitration_id
@@ -874,7 +874,7 @@ class Node:
                                             sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                             if sdo_server_scid is None:
                                                 raise ValueError("SDO Server SCID not specified")
-                                            msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
+                                            msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
                                             self._send(msg)
                                             data_len = len(self._sdo_data) - 7 * self._sdo_seqno
                                             self._sdo_seqno += 1
@@ -911,7 +911,7 @@ class Node:
                                                 sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                                 if sdo_server_scid is None:
                                                     raise ValueError("SDO Server SCID not specified")
-                                                msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
+                                                msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
                                                 self._send(msg)
                                                 data_len = len(self._sdo_data) - 7 * self._sdo_seqno
                                                 self._sdo_seqno += 1
@@ -944,7 +944,7 @@ class Node:
                         sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                         if sdo_server_scid is None:
                             raise ValueError("SDO Server SCID not specified")
-                        msg = socketcan.Message(sdo_server_scid.value & 0x1FFFFFFF, data)
+                        msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
                         self._send(msg)
                 for index in range(0x1280, 0x1300):
                     if index in self.od:
@@ -1006,7 +1006,7 @@ class Node:
             return
         return self._sdo_requests[sdo_server_rx_can_id]
 
-    def _send(self, msg: socketcan.Message):
+    def _send(self, msg: can.Message):
         return self.bus.send(msg)
 
     def _send_emcy(self, eec, msef=0):
@@ -1074,7 +1074,7 @@ class Node:
                 if tpdo_cp is not None:
                     tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
                     if tpdo_cp_id is not None and tpdo_cp_id.value is not None:
-                        msg = socketcan.Message(tpdo_cp_id.value & 0x1FFF, data)
+                        msg = can.Message(arbitration_id=tpdo_cp_id.value & 0x1FFF, data=data, is_extended_id=False)
                         self._send(msg)
                         self._tpdo_triggers[i] = False
 
@@ -1084,7 +1084,7 @@ class Node:
             sync_value = sync_object.get(ODSI_VALUE)
             if sync_value is not None and sync_value.value is not None:
                 sync_id = sync_value.value & 0x1FFFF
-                msg = socketcan.Message(sync_id)
+                msg = can.Message(arbitration_id=sync_id, is_extended_id=False)
                 self._send(msg)
 
     def emcy(self, eec, msef=0):
@@ -1097,8 +1097,8 @@ class Node:
                 errors_obj.update({(si + 1): errors_obj.get(si)})
             errors_obj.update({0x01: SubObject(
                 parameter_name="Standard error field",
-                access_type=socketcanopen.AccessType.RO,
-                data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
+                access_type=AccessType.RO,
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
                 low_limit=0x00000000,
                 high_limit=0xFFFFFFF,
                 default_value=((msef & 0xFFFF) << 16) + eec
@@ -1139,12 +1139,7 @@ class Node:
         return False
 
     def recv(self):
-        while True:
-            rlist, _, _, = select([self.bus], [], [])
-            if len(rlist) > 0:
-                #msg =  Message.factory(self.bus.recv()) # Message.factory uses default COB-IDs
-                msg = self.bus.recv() # Returns socketcan.Message
-                return msg
+        return self.bus.recv() # Returns can.Message
 
     def reset(self):
         logger.info("Device reset")

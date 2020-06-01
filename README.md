@@ -4,7 +4,7 @@ About
 Modules
 -------
 
-This repository contains Python modules used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `socketcan`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `socketcan` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `socketcanopen`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `socketcan.Bus`, a node ID (integer, 1 to 127), and an `socketcanopen.ObjectDictionary`.
+This repository contains a Python module used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `socketcan`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `socketcan` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `socketcanopen`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `can.BusABC`, a node ID (integer, 1 to 127), and an `socketcanopen.ObjectDictionary`.
 
 Node Applications
 -------------------------
@@ -22,8 +22,6 @@ Protocol Adaptors
 -----------------
 
 Example protocol adaptors are provided: Note that these are very crude and do not provide buffering.
-* CAN-to-HTTP (`can-http.py`, see below for API)
-* CAN-to-UDP (`can-udp.py`, uses [SocketCAN](https://www.kernel.org/doc/Documentation/networking/can.txt) message structure)
 * CANopen-to-HTTP (`canopen-http.py`, implementation of CiA 309-5)
 * CAN-to-WebSocket (`websocketcan-server.py`, uses SocketCAN message structure; `websocketcan.js` and `websocketcanopen.js` provide wrappers to JavaScript's WebSocket, which can be used to decode messages in client browser)
 
@@ -117,7 +115,7 @@ Installation
 
 The simplest node is presented in the [canopen-node-sdo.py](/examples/canopen-node-sdo.py) file.
 
-Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: socketcanopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: socketcan.Message)` and `Node.listen()` are not. 
+Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: socketcanopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: can.Message)` and `Node.listen()` are not. 
 
 Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
 ---------------------------------------------------------------------
@@ -126,132 +124,7 @@ Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
     1. Copy [canopen-master.py](/examples/canopen-master.py) to `/home/pi/`
     2. Copy [canopen-master.service](/unit-files/canopen-master.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
-8. Setup CAN-to-HTTP Adapter
-    1. Copy [canhttp.py](/examples/canhttp.py) to `/home/pi/`
-    2. Copy [canhttp.service](/unit-files/canhttp.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
-    
+8. Setup CAN-to-WebSocket Adapter
+    1. Copy [websocketcan-server.py](/examples/websocketcan-server.py) to `/home/pi/`
+    2. Copy [websocketcan-server.service](/unit-files/websocketcan-server.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
-HTTP to CAN API
-========================
-* The HTTP to CAN API uses the HTTP/1.1 protocol's GET method.
-* Telemetry responses use the [server-side event API](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
-
-Telemetry
----------
-When the host URL is accessed without query string parameters, a `text/event-stream` is opened and CAN traffic is streamed as JSON-encoded data-only events.  The JSON objects shall have the following attribute-value pairs:
-* `bus`: Which CAN bus message was received (if multiple; 0 or 1 e.g.)
-* `id`: 11-bit CAN identifier, in base 10
-* `data`: Array of CAN data bytes (0-8 bytes), in base 10
-* `ts`: ISO 8601 time-stamp of when the CAN message was received
-
-*Note: This assumes the events can be supplied faster than CAN frames are received.  It is suggested that CAN frames be buffered, and an `error` event sent if the buffer overflows (see Errors section).*
-
-**Example**
-
-Request: `GET / HTTP/1.1`
-
-Response: (one data-only event per CAN frame)
-```
-HTTP/1.1 200 OK
-Access-Control-Origin: *
-Content-Type: text/event-stream
-Cache-Control: no-cache
-
-data:{"bus": 0, "id": 123, "data":[255,128,5], "ts":"2015-12-21T10:36:30.123Z"}
-
-data:{"bus": 1, "id": 157, "data":[], "ts":"2015-12-21T10:36:56.789Z"}
-```
-
-Commands
---------
-When the host URL is accessed with a valid set of query string arguments listed below, the command is translated to a CAN frame.
-* `id`: (required) The 11-bit CAN identifier, in base 10
-* `data`: (optional) A JSON-encoded array of CAN data bytes (in base 10), having a length of 0-8.
-
-**Example**
-
-Request: `GET /?id=123&data=[255,128,5] HTTP/1.1`
-
-Response:
-```
-HTTP/1.1 204 No Content
-Access-Control-Allow-Origin: *
-
-```
-
-Errors
-======
-
-If no query string is present, and the state of the CAN bus (or busses) are abnormal, an `error` event is streamed (once) if "bus-off" or a `warning` event if "error warning" (error count exceeds a threshold).  A `notice` event is streamed if the bus (or busses) return to a normal state.
-
-**Example**
-
-Request: `GET / HTTP/1.1`
-
-Response:
-```
-HTTP/1.1 200 OK
-Access-Control-Allow-Origin: *
-Content-Type: text/event-stream
-Cache-Control: no-cache
-
-event: error
-data: Bus 0 is in the bus-off state
-
-event: warning
-data: Bus 1 is in the warning state
-
-event: notice
-data: Bus 1 is now in a normal state
-
-event: error
-data: CAN RX buffer overflow on bus 1
-
-```
-
-If a query string is present, but the required command parameters do not exist or are invalid, then an HTTP 400 code shall be returned.  All other errors shall be formatted per the [JSON API](http://jsonapi.org/format/#error-objects).
-
-
-**Example**
-
-Request:
-
-`GET /?badargument=1 HTTP/1.1` or
-
-`GET /?id=4096&data=[] HTTP/1.1` (invalid id) or
-
-`GET /?id=123&data=[256] HTTP/1.1` (invalid data byte) or
-
-`GET /?id=123&data=[0,0,0,0,0,0,0,0,0]` (too many data bytes)
-
-Response:
-```
-HTTP/1.1 400 Bad Request
-Access-Control-Allow-Origin: *
-
-```
-
-**Example**
-
-Request `GET /?id=123&data[] HTTP/1.1`
-
-Response:
-```
-HTTP/1.1 200 OK
-Access-Control-Allow-Origin: *
-
-{"errors":[{"detail":"Message sent on bus 0, but bus 1 is in the bus-off state"}]}
-
-```
-
-**Example**
-
-Request `GET /?id=123&data=[] HTTP/1.1`
-
-Response:
-```
-HTTP/1.1 200 OK
-Access-Control-Allow-Origin: *
-
-{"errors":[{"detail":"Application-specific error message"}]}
-```
