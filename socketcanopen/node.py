@@ -5,8 +5,10 @@
 from binascii import crc_hqx
 import can
 from datetime import datetime, timedelta
+import io
 import logging
 import math
+import os
 from select import select
 import struct
 from threading import Event, Thread, Timer, enumerate
@@ -733,9 +735,15 @@ class Node:
                                             if data_type_length == 0:
                                                 data_type_length = None
                                     if data_type_length is None:
-                                        data_type_length = len(bytes(subobj))
+                                        if hasattr(subobj.value, "fileno"):
+                                            data_type_length = os.fstat(subobj.value.fileno()).st_size
+                                        else:
+                                            data_type_length = len(bytes(subobj))
                                     if data_type_length > 4:
-                                        self._sdo_data = bytes(subobj)
+                                        if hasattr(subobj.value, "read"):
+                                            self._sdo_data = subobj.value
+                                        else:
+                                            self._sdo_data = bytes(subobj)
                                         self._sdo_len = data_type_length
                                         self._sdo_t = 0
                                         self._sdo_odi = odi
@@ -764,7 +772,10 @@ class Node:
                                         l = 7
                                     else:
                                         l = self._sdo_len
-                                    sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+l or None)]
+                                    if hasattr(self._sdo_data, "read"):
+                                        sdo_data = self._sdo_data.read(l)
+                                    else:
+                                        sdo_data = self._sdo_data[-self._sdo_len:(-self._sdo_len+l or None)]
                                     self._sdo_len -= l
                                     n = 7 - l
                                     if self._sdo_len > 0:
@@ -852,7 +863,10 @@ class Node:
                                             size = data_type_length
                                         scs = SDO_SCS_BLOCK_UPLOAD
                                         self._sdo_cs = scs
-                                        self._sdo_data = bytes(subobj)
+                                        if hasattr(subobj.value, "read"):
+                                            self._sdo_data = subobj.value
+                                        else:
+                                            self._sdo_data = bytes(subobj)
                                         self._sdo_len = blksize
                                         self._sdo_odi = odi
                                         self._sdo_odsi = odsi
@@ -863,21 +877,30 @@ class Node:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
                                         logger.info("SDO block upload start request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
                                         self._sdo_seqno = 1
-                                        data_len = len(self._sdo_data)
+                                        if hasattr(self._sdo_data, "fileno"):
+                                            data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
+                                        else:
+                                            data_len = len(self._sdo_data)
                                         while data_len > 0 and self._sdo_seqno <= self._sdo_len:
                                             if data_len > 7:
                                                 c = 0
                                             else:
                                                 c = 1
-                                            sdo_data = self._sdo_data[(self._sdo_seqno - 1) * 7:self._sdo_seqno * 7].ljust(7, b'\x00')
+                                            if hasattr(self._sdo_data, "read"):
+                                                sdo_data = self._sdo_data.read(7)
+                                            else:
+                                                sdo_data = self._sdo_data[(self._sdo_seqno - 1) * 7:self._sdo_seqno * 7]
+                                            sdo_data = sdo_data.ljust(7, b'\x00')
                                             data = struct.pack("<B7s", (c << 7) + self._sdo_seqno, sdo_data)
                                             sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                             if sdo_server_scid is None:
                                                 raise ValueError("SDO Server SCID not specified")
                                             msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
                                             self._send(msg)
-                                            data_len = len(self._sdo_data) - 7 * self._sdo_seqno
+                                            data_len -= 7
                                             self._sdo_seqno += 1
+                                        if hasattr(self._sdo_data, "seek"):
+                                            self._sdo_data.seek((1 - self._sdo_seqno) * 7, io.SEEK_CUR)
                                         return
                                     elif cs == SDO_BLOCK_SUBCOMMAND_RESPONSE:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
@@ -886,17 +909,30 @@ class Node:
                                         ackseq = data[1]
                                         blksize = data[2]
                                         if ackseq != 0:
-                                            data_len = len(self._sdo_data)
+                                            if hasattr(self._sdo_data, "fileno"):
+                                                data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
+                                            else:
+                                                data_len = len(self._sdo_data)
                                             bytes_transferred = 7 * ackseq
                                             bytes_left = data_len - bytes_transferred
                                             if bytes_left < 0:
                                                 n = -bytes_left
                                             else:
                                                 n = 0
-                                            self._sdo_data = self._sdo_data[bytes_transferred:]
-                                        self._sdo_seqno = ackseq + 1
+                                            if hasattr(self._sdo_data, "seek"):
+                                                self._sdo_data.seek(bytes_transferred, io.SEEK_CUR)
+                                            else:
+                                                self._sdo_data = self._sdo_data[bytes_transferred:]
+                                        if ackseq == self._sdo_len:
+                                            self._sdo_seqno = 1
+                                        else:
+                                            self._sdo_seqno = ackseq + 1
                                         self._sdo_len = blksize
-                                        data_len = len(self._sdo_data)
+                                        if hasattr(self._sdo_data, "fileno"):
+                                            data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
+                                        else:
+                                            data_len = len(self._sdo_data)
+                                        logger.info("{} bytes remaining in SDO block upload".format(data_len))
                                         if data_len == 0:
                                             crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
                                             data = struct.pack("<BH5x", (SDO_SCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + (n << 2) + SDO_BLOCK_SUBCOMMAND_END, crc)
@@ -906,15 +942,21 @@ class Node:
                                                     c = 0
                                                 else:
                                                     c = 1
-                                                sdo_data = self._sdo_data[self._sdo_seqno - 1:self._sdo_seqno + 7].ljust(7, b'\x00')
+                                                if hasattr(self._sdo_data, "read"):
+                                                    sdo_data = self._sdo_data.read(7)
+                                                else:
+                                                    sdo_data = self._sdo_data[(self._sdo_seqno - 1) * 7:self._sdo_seqno * 7]
+                                                sdo_data = sdo_data.ljust(7, b'\x00')
                                                 data = struct.pack("<B7s", (c << 7) + self._sdo_seqno, sdo_data)
                                                 sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                                 if sdo_server_scid is None:
                                                     raise ValueError("SDO Server SCID not specified")
                                                 msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
                                                 self._send(msg)
-                                                data_len = len(self._sdo_data) - 7 * self._sdo_seqno
+                                                data_len -= 7
                                                 self._sdo_seqno += 1
+                                            if hasattr(self._sdo_data, "seek"):
+                                                self._sdo_data.seek((1 - self._sdo_seqno) * 7, io.SEEK_CUR)
                                             return
                                     else: # SDO_BLOCK_SUBCOMMAND_END
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:

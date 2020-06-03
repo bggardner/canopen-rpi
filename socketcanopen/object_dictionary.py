@@ -744,7 +744,7 @@ class SubObject(ProtoObject):
         return b # ODI_DATA_TYPE_OCTET_STRING or ODI_DATA_TYPE_DOMAIN
 
     def __setitem__(self, name, value):
-        if name == "value" and type(value) not in [bool, int, float, str, bytes, bytearray, datetime, timedelta]: # TODO: Somehow support DOMAIN data type
+        if name == "value" and type(value) not in [bool, int, float, str, bytes, bytearray, datetime, timedelta] and not hasattr(value, "read"): # TODO: Somehow support DOMAIN data type
             raise TypeError("CANopen objects can only be set to one of bool, int, float, str, bytes, bytearray, datetime, or timedelta")
         super().__setattr__(name,  value)
 
