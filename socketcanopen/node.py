@@ -742,6 +742,7 @@ class Node:
                                     if data_type_length > 4:
                                         if hasattr(subobj.value, "read"):
                                             self._sdo_data = subobj.value
+                                            self._sdo_data.seek(0)
                                         else:
                                             self._sdo_data = bytes(subobj)
                                         self._sdo_len = data_type_length
@@ -865,6 +866,7 @@ class Node:
                                         self._sdo_cs = scs
                                         if hasattr(subobj.value, "read"):
                                             self._sdo_data = subobj.value
+                                            self._sdo_data.seek(0)
                                         else:
                                             self._sdo_data = bytes(subobj)
                                         self._sdo_len = blksize
@@ -878,7 +880,7 @@ class Node:
                                         logger.info("SDO block upload start request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
                                         self._sdo_seqno = 1
                                         if hasattr(self._sdo_data, "fileno"):
-                                            data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
+                                            data_len = os.fstat(self._sdo_data.fileno()).st_size
                                         else:
                                             data_len = len(self._sdo_data)
                                         while data_len > 0 and self._sdo_seqno <= self._sdo_len:
