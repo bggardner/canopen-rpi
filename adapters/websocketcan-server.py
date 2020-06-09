@@ -13,7 +13,7 @@ WEBSOCKET_SERVER_PORT = 8003
 async def websocket_consumer_handler(websocket, path):
     global can_bus
     async for msg in websocket:
-        # Convert from bytes to can.Message: f0rom can.interfaces.socketcan.socketcan.capture_message()
+        # Convert from bytes to can.Message: from can.interfaces.socketcan.socketcan.capture_message()
         can_id, can_dlc, flags, data = can.interfaces.socketcan.socketcan.dissect_can_frame(msg)
         is_extended_frame_format = bool(can_id & can.interfaces.socketcan.constants.CAN_EFF_FLAG)
         is_remote_transmission_request = bool(can_id & can.interfaces.socketcan.constants.CAN_RTR_FLAG)
