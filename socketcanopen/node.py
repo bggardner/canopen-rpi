@@ -1,4 +1,4 @@
-# TODO: OSErrors are thrown if the CAN bus goes down, need to do threaded Exception handling
+# TODO: OSErrors / can.CanErrors are thrown if the CAN bus goes down, need to do threaded Exception handling
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
 # TODO: Check for BUS-OFF before attempting to send
 # TODO: NMT error handler (CiA302-2)
@@ -69,35 +69,50 @@ class Node:
     SDO_ROUND_TRIP_TIME = 222e-6
 
     def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
-        self.bus = bus
+        self.default_bus = bus
+
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
         self.id = id
         self._default_od = od
 
         if "err_indicator" in kwargs:
-            if isinstance(kwargs["err_indicator"], ErrorIndicator):
-                self._err_indicator = kwargs["err_indicator"]
-                self._process_err_indicator()
-                self._err_indicator_timer = IntervalTimer(self._err_indicator.interval , self._process_err_indicator)
-                self._err_indicator_timer.start()
-            else:
+            if not isinstance(kwargs["err_indicator"], ErrorIndicator):
                 raise TypeError
+            self._err_indicator = kwargs["err_indicator"]
+            if "redundant_err_indicator" in kwargs:
+                if not isinstance(kwargs["redundant_err_indicator"], ErrorIndicator):
+                    raise TypeError
+                self._redundant_err_indicator = kwargs["redundant_err_indicator"]
+            # TODO: Move this to reset()
+            self._process_err_indicator()
+            self._err_indicator_timer = IntervalTimer(self._err_indicator.interval , self._process_err_indicator)
+            self._err_indicator_timer.start()
         else:
             self._err_indicator = None
             self._err_indicator_timer = None
 
         if "run_indicator" in kwargs:
-            if isinstance(kwargs["run_indicator"], RunIndicator):
-                self._run_indicator = kwargs["run_indicator"]
-            else:
+            if not isinstance(kwargs["run_indicator"], RunIndicator):
                 raise TypeError
+            self._run_indicator = kwargs["run_indicator"]
+            if "redundant_run_indicator" in kwargs:
+                if not isinstance(kwargs["redundant_run_indicator"], RunIndicator):
+                    raise TypeError
+                self._redundant_run_indicator = kwargs["redundant_run_indicator"]
+            else:
+                self.redundant_run_indicator = None
         else:
             self._run_indicator = None
+            self._redundant_run_indicator = None
 
+        self._default_bus_heartbeat_disabled = False
         self._emcy_inhibit_time = 0
         self._first_boot = True
         self._heartbeat_consumer_timers = {}
+        self._heartbeat_evaluation_counters = {}
+        self._heartbeat_evaluation_power_on_timer = None
+        self._heartbeat_evaluation_reset_communication_timer = None
         self._heartbeat_producer_timer = None
         self._listener = None
         self._message_timers = []
@@ -109,6 +124,8 @@ class Node:
         self._nmt_multiple_master_timer = None
         self._nmt_slave_booters = {}
         self._pending_emcy_msgs = []
+        self._redundant_listener = None
+        self._redundant_nmt_state = None
         self._sdo_cs = None
         self._sdo_data = None
         self._sdo_data_type = None
@@ -121,9 +138,16 @@ class Node:
         self._sync_counter = 0
         self._sync_timer = None
         self._timedelta = timedelta()
+        self._tpdo_inhibit_times = {}
         self._tpdo_triggers = [False, False, False, False]
 
-        self.nmt_state = NMT_STATE_INITIALISATION
+        if "redundant_bus" in kwargs:
+            if not isinstance(kwargs["redundant_bus"], can.BusABC):
+                raise TypeError
+            self.redundant_bus = kwargs["redundant_bus"]
+        else:
+            self.redundant_bus = None
+
         self.reset()
 
     def __enter__(self):
@@ -132,17 +156,18 @@ class Node:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._reset_timers()
 
-    def _boot(self):
-        logger.info("Booting with node-ID of {}".format(self.id))
-        self._send(BootupMessage(self.id))
-        self.nmt_state = NMT_STATE_PREOPERATIONAL
-        if self._listener is None:
-            self._listener = Thread(target=self._listen, daemon=True)
-            self._listener.start()
-        else:
-            self._is_listening = True
+    def _boot(self, channel=None):
+        if channel is None:
+            channel = self.active_bus.channel
+        logger.info("Booting on {} with node-ID of {}".format(channel, self.id))
+        self._send(BootupMessage(self.id), channel)
+        self.nmt_state = (NMT_STATE_PREOPERATIONAL, channel)
+        self._listener = can.Notifier(self.default_bus, [self._process_msg])
+        if self.redundant_bus is not None:
+            self._redundant_listener = can.Notifier(self.redundant_bus, [self._process_msg])
         self._process_timers()
-        self._nmt_startup()
+        if channel == self.active_bus.channel:
+            self._nmt_startup()
 
     @staticmethod
     def _cancel_timer(timer: Timer):
@@ -152,6 +177,7 @@ class Node:
         return False
 
     def _heartbeat_consumer_timeout(self, id):
+        self._heartbeat_evaluation_counters[id] = 0 # For detecting heartbeat event
         self.emcy(EMCY_HEARTBEAT_BY_NODE + id)
         request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
         if request_nmt_obj is not None:
@@ -160,11 +186,24 @@ class Node:
             request_nmt_obj.update({id: request_nmt_subobj})
             self.od.update({ODI_REQUEST_NMT: request_nmt_obj})
 
-    def _listen(self):
-        self._is_listening = True
-        while True:
-            msg = self.recv()
-            self._process_msg(msg)
+    def _heartbeat_evaluation_power_on_timeout(self):
+        logger.info("Heartbeat evaluation timer (power-on) expired")
+        if len(self._heartbeat_evaluation_counters.values()) == 0 or max(self._heartbeat_evaluation_counters.values()) < 3: # CiA 302-6, Figure 7, event (4)
+            self.active_bus = self.redundant_bus
+        # else: CiA 302-6, Figure 7, event (1)
+        self._heartbeat_evaluation_counters = {}
+        self.send_nmt(NmtIndicateActiveInterfaceMessage())
+
+    def _heartbeat_evaluation_reset_communication_timeout(self):
+        logger.info("Heartbeat evaluation timer (reset communication) expired")
+        if self.active_bus == self.default_bus:
+            if len(self._heartbeat_evaluation_counters.values()) > 0 and min(self._heartbeat_evaluation_counters.values()) == 0: # CiA 302-6, Figure 7, event (6)
+                self.active_bus = self.redundant_bus
+                self.send_nmt(NmtIndicateActiveInterfaceMessage())
+        else:
+            if len(self._heartbeat_evaluation_counters.values()) > 0 and max(self._heartbeat_evaluation_counters.values()) >= 3: # CiA 302-6, Figure 7, event (8)
+                self.active_bus = self.default_bus
+                self.send_nmt(NmtIndicateActiveInterfaceMessage())
 
     def _nmt_active_master_timeout(self, first_boot=None):
         if first_boot is None:
@@ -415,8 +454,11 @@ class Node:
             logger.debug("Entering NMT slave mode")
 
     def _process_err_indicator(self):
-        err_state = self.bus.state
-        self._err_indicator.set_state(err_state)
+        try:
+            self._err_indicator.set_state(self.default_bus.state)
+            self._redundant_err_indicator.set_state(self.redundant_bus.state)
+        except AttributeError:
+            pass
 
     def _process_heartbeat_producer(self):
         heartbeat_producer_time_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
@@ -434,8 +476,8 @@ class Node:
             self._heartbeat_producer_timer.start()
 
     def _process_msg(self, msg: can.Message):
-        if not self.is_listening:
-            return
+        #if not self.is_listening:
+        #    return
         can_id = msg.arbitration_id
         data = msg.data
         fc = (can_id & FUNCTION_CODE_MASK) >> FUNCTION_CODE_BITNUM # Only look for restricted CAN-IDs using function code
@@ -461,16 +503,15 @@ class Node:
                 if target_node == self.id or target_node == BROADCAST_NODE_ID:
                     cs = data[0]
                     if cs == NMT_NODE_CONTROL_START:
-                        self.nmt_state = NMT_STATE_OPERATIONAL
+                        self.nmt_state = (NMT_STATE_OPERATIONAL, msg.channel)
                     elif cs == NMT_NODE_CONTROL_STOP:
-                        self.nmt_state = NMT_STATE_STOPPED
+                        self.nmt_state = (NMT_STATE_STOPPED, msg.channel)
                     elif cs == NMT_NODE_CONTROL_PREOPERATIONAL:
-                        self.nmt_state = NMT_STATE_PREOPERATIONAL
+                        self.nmt_state = (NMT_STATE_PREOPERATIONAL, msg.channel)
                     elif cs == NMT_NODE_CONTROL_RESET_NODE:
                         self.reset()
                     elif cs == NMT_NODE_CONTROL_RESET_COMMUNICATION:
-                        logger.debug("Received reset communication")
-                        self.reset_communication()
+                        self.reset_communication(msg.channel)
             elif command == NMT_MASTER_NODE_ID: # Response from either an NmtActiveMasterRequest, NmtFlyingMasterRequest, or unsolicted from non-Flying Master after bootup was indicated
                 if self.is_nmt_master_capable:
                     logger.debug("Active NMT flying master detected with node-ID {}".format(data[1]))
@@ -504,9 +545,25 @@ class Node:
                     logger.info("Force NMT flying master negotation service indicated")
                     self._nmt_become_inactive_master()
                     self._nmt_flying_master_startup()
+            elif command == NMT_INDICATE_ACTIVE_INTERFACE: # CiA 302-6, Figure 7, event (2), (5), (7), or (9)
+                self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
+                if msg.channel == self.default_bus.channel:
+                    self.active_bus = self.default_bus
+                else:
+                    self.active_bus = self.redundant_bus
         elif fc == FUNCTION_CODE_NMT_ERROR_CONTROL:
             producer_id = can_id & 0x7F
             producer_nmt_state = data[0]
+
+            if msg.channel == self.default_bus.channel and (
+                    (self._heartbeat_evaluation_power_on_timer is not None and self._heartbeat_evaluation_power_on_timer.is_alive()) or
+                    (self._heartbeat_evaluation_reset_communication_timer is not None and self._heartbeat_evaluation_reset_communication_timer.is_alive())
+                ):
+                if producer_id in self._heartbeat_evaluation_counters:
+                    self._heartbeat_evaluation_counters[producer_id] += 1
+                else:
+                    self._heartbeat_evaluation_counters[producer_id] = 1
+
             if producer_id in self._heartbeat_consumer_timers:
                 self._cancel_timer(self._heartbeat_consumer_timers.get(producer_id))
             elif self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
@@ -564,7 +621,7 @@ class Node:
                             pass # TODO: Inform application
 
         else: # Check non-restricted CAN-IDs
-            if self.nmt_state == NMT_STATE_OPERATIONAL:
+            if self.nmt_state == NMT_STATE_OPERATIONAL and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.4.2.3
                 sync_obj = self.od.get(ODI_SYNC)
                 if sync_obj is not None:
                     sync_obj_value = sync_obj.get(ODSI_VALUE)
@@ -578,7 +635,7 @@ class Node:
                                     tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
                                     if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
                                         self._send_pdo(i + 1)
-            if self.nmt_state != NMT_STATE_STOPPED:
+            if (self.nmt_state == NMT_STATE_PREOPERATIONAL or self.nmt_state == NMT_STATE_OPERATIONAL) and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
                 time_obj = self.od.get(ODI_TIME_STAMP)
                 if time_obj is not None:
                     time_cob_id = time_obj.get(ODSI_VALUE).value
@@ -588,7 +645,11 @@ class Node:
                         td = timedelta(days=d, milliseconds=ms)
                         ts = datetime(1980, 1, 1) + td
                         self._timedelta = ts - datetime.now()
-            if self.nmt_state != NMT_STATE_STOPPED and len(data) == 8: # Ignore SDO if data is not 8 bytes
+            if (
+                   (msg.channel == self.default_bus.channel and (self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL))
+                   or
+                   (self.redundant_bus is not None and msg.channel == self.redundant_bus.channel and (self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL))
+               ) and len(data) == 8: # Ignore SDO if data is not 8 bytes
                 sdo_server_object = self.od.get(ODI_SDO_SERVER)
                 if sdo_server_object is not None:
                     sdo_server_csid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_CSID)
@@ -897,8 +958,8 @@ class Node:
                                             sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                             if sdo_server_scid is None:
                                                 raise ValueError("SDO Server SCID not specified")
-                                            msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
-                                            self._send(msg)
+                                            msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                                            self._send(msg, msg.channel)
                                             data_len -= 7
                                             self._sdo_seqno += 1
                                         if hasattr(self._sdo_data, "seek"):
@@ -953,8 +1014,8 @@ class Node:
                                                 sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                                 if sdo_server_scid is None:
                                                     raise ValueError("SDO Server SCID not specified")
-                                                msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
-                                                self._send(msg)
+                                                msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                                                self._send(msg, msg.channel)
                                                 data_len -= 7
                                                 self._sdo_seqno += 1
                                             if hasattr(self._sdo_data, "seek"):
@@ -988,8 +1049,8 @@ class Node:
                         sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                         if sdo_server_scid is None:
                             raise ValueError("SDO Server SCID not specified")
-                        msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False)
-                        self._send(msg)
+                        msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                        self._send(msg, msg.channel)
                 for index in range(0x1280, 0x1300):
                     if index in self.od:
                         sdo_client_rx_cob_id = self.od.get(index).get(ODSI_SDO_CLIENT_RX).value
@@ -1015,7 +1076,7 @@ class Node:
         else:
             sync_time = 0
         self._cancel_timer(self._sync_timer)
-        if is_sync_producer and sync_time != 0 and self.nmt_state != NMT_STATE_STOPPED:
+        if is_sync_producer and sync_time != 0:
             self._sync_timer = IntervalTimer(sync_time, self._send_sync)
             self._sync_timer.start()
 
@@ -1030,6 +1091,7 @@ class Node:
             self._cancel_timer(t)
         self._heartbeat_consumer_timers = {}
         self._cancel_timer(self._err_indicator_timer)
+        self._cancel_timer(self._heartbeat_evaluation_reset_communication_timer)
         self._cancel_timer(self._heartbeat_producer_timer)
         self._cancel_timer(self._sync_timer)
         self._cancel_timer(self._nmt_active_master_timer)
@@ -1050,8 +1112,38 @@ class Node:
             return
         return self._sdo_requests[sdo_server_rx_can_id]
 
-    def _send(self, msg: can.Message):
-        return self.bus.send(msg)
+    def _send(self, msg: can.Message, channel=None):
+        if channel is None:
+            bus = self.active_bus
+        elif channel == self.redundant_bus.channel:
+            bus = self.redundant_bus
+        else:
+            bus = self.default_bus
+        max_tx_delay = None
+        if ODI_REDUNDANCY_CONFIGURATION in self.od: # CiA 302-6, 4.1.2.2(b)
+            redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
+            max_tx_delay = redundancy_cfg.get(0x01).value / 1000
+        try:
+            bus.send(msg, max_tx_delay)
+        except can.CanError:
+            if bus == self.default_bus and max_tx_delay is not None: # CiA 302-6, Section 7.1.2.2(d)
+                err_threshold = redundancy_cfg.get(0x04)
+                err_counter = redundancy_cfg.get(0x05)
+                err_counter.value = min(err_threshold.value, err_counter.value + 4)
+                redundancy_cfg.update({0x05: err_counter})
+                self.od.update({ODI_REDUNDANCY_CONFIGURATION: redundancy_cfg})
+                if self.active_bus == self.default_bus and err_counter.value == err_threshold.value:
+                    self._default_bus_heartbeat_disabled = True
+                    self.active_bus = self.redundant_bus
+                    self.send_nmt(NmtIndicateActiveInterfaceMessage())
+        else:
+            if bus == self.default_bus and max_tx_delay is not None: # CiA 302-6, Section 7.1.2.2(e)
+                err_counter = redundancy_cfg.get(0x05)
+                err_counter.value = min(0, err_counter.value - 1)
+                redundancy_cfg.update({0x05: err_counter})
+                self.od.update({ODI_REDUNDANCY_CONFIGURATION: redundancy_cfg})
+                if err_counter.value == 0:
+                    self._default_bus_heartbeat_disabled = False
 
     def _send_emcy(self, eec, msef=0):
         emcy_id_obj = self.od.get(ODI_EMCY_ID)
@@ -1071,7 +1163,7 @@ class Node:
         if er_value.value is None:
             return
         msg = EmcyMessage(emcy_id_value.value, eec, er_value.value, msef)
-        if self.nmt_state == NMT_STATE_STOPPED:
+        if self._nmt_state == NMT_STATE_STOPPED and self._redundant_nmt_state == NMT_STATE_STOPPED:
             self._pending_emcy_msgs.append(msg)
             return
         emcy_inhibit_time_obj = self.od.get(ODI_INHIBIT_TIME_EMCY)
@@ -1082,15 +1174,25 @@ class Node:
                 if self._emcy_inhibit_time + emcy_inhibit_time < time():
                     logger.info("EMCY inhibit time violation, delaying message")
                     self._emcy_inhibit_time += emcy_inhibit_time
-                    t = Timer(time() - self._emcy_inhibit_time, self.send_emcy, [eec, msef])
-                    t.start()
-                    self._message_timers.append(t)
+                    if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
+                        t = Timer(time() - self._emcy_inhibit_time, self._send, [msg, self.default_bus.channel])
+                        t.start()
+                        self._message_timers.append(t)
+                    if self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+                        t = Timer(time() - self._emcy_inhibit_time, self._send, [msg, self.redundant_bus.channel])
+                        t.start()
+                        self._message_timers.append(t)
                     return
-        self._send(msg)
+        if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
+            self._send(msg, channel=self.default_bus.channel, timeout=max_tx_delay)
+        if self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+            self._send(msg, channel=self.redundant_bus.channel, timeout=max_tx_delay)
 
     def _send_heartbeat(self):
         msg = HeartbeatMessage(self.id, self.nmt_state)
-        return self._send(msg)
+        if not self._default_bus_heartbeat_disabled:
+            self._send(msg, self.default_bus.channel)
+        self._send(msg, self.redundant_bus.channel)
 
     def _send_pdo(self, i):
         i = i - 1
@@ -1119,8 +1221,28 @@ class Node:
                     tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
                     if tpdo_cp_id is not None and tpdo_cp_id.value is not None:
                         msg = can.Message(arbitration_id=tpdo_cp_id.value & 0x1FFF, data=data, is_extended_id=False)
-                        self._send(msg)
                         self._tpdo_triggers[i] = False
+                        if ODSI_TPDO_COMM_PARAM_INHIBIT_TIME in tpdo_cp:
+                            tpdo_inhibit_time = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_INHIBIT_TIME).value / 10000
+                            if i not in self._tpdo_inibit_time:
+                                self._tpdo_inhibit_times[i] = 0
+                            if self._tpdo_inhibit_times[i] + tpdo_inhibit_time < time():
+                                logger.info("TPDO{} inhibit time violation, delaying message".format(i))
+                                self._tpdo_inhibit_times[i] += tpdo_inhibit_time
+                                # CiA 302-6, 4.1.2.2(a)
+                                if self._nmt_state == NMT_STATE_OPERATIONAL:
+                                    t = Timer(time() - self._tpdo_inhibit_times[i], self._send, [msg, self.default_bus.channel])
+                                    t.start()
+                                    self._message_timers.append(t)
+                                if self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+                                    t = Timer(time() - self._tpdo_inhibit_times[i], self._send, [msg, self.redundant_bus.channel])
+                                    t.start()
+                                    self._message_timers.append(t)
+                        # CiA 302-6, 4.1.2.2(a)
+                        if self._nmt_state == NMT_STATE_OPERATIONAL:
+                            self._send(msg, self.default_bus.channel, timeout=max_tx_delay)
+                        if self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+                            self._send(msg, self.redundant_bus.channel, timeout=max_tx_delay)
 
     def _send_sync(self):
         sync_object = self.od.get(ODI_SYNC)
@@ -1129,7 +1251,19 @@ class Node:
             if sync_value is not None and sync_value.value is not None:
                 sync_id = sync_value.value & 0x1FFFF
                 msg = can.Message(arbitration_id=sync_id, is_extended_id=False)
-                self._send(msg)
+                if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
+                    self._send(msg, self.default_bus.channel)
+                if self._redundant_nmt_state is not None and self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+                    self._send(msg, self.redundant_bus.channel)
+
+    @property
+    def active_bus(self):
+        return self._active_bus
+
+    @active_bus.setter
+    def active_bus(self, bus):
+        logger.info("Active bus is now {}".format(bus.channel))
+        self._active_bus = bus
 
     def emcy(self, eec, msef=0):
         errors_obj = self.od.get(ODI_PREDEFINED_ERROR_FIELD)
@@ -1151,21 +1285,32 @@ class Node:
         self._send_emcy(eec, msef)
 
     @property
-    def is_listening(self):
-        return self._is_listening
-
-    @property
     def nmt_state(self):
-        return self._nmt_state
+        if self.active_bus.channel == self.default_bus.channel:
+            return self._nmt_state
+        else:
+            return self._redundant_nmt_state
 
     @nmt_state.setter
     def nmt_state(self, nmt_state):
-        logger.info("Entering NMT state with value 0x{:02X}".format(nmt_state))
-        self._nmt_state = nmt_state
-        try:
-            self._run_indicator.set_state(nmt_state)
-        except AttributeError:
-            pass
+        channel = None
+        if isinstance(nmt_state, tuple):
+            nmt_state, channel = nmt_state
+        if channel is None:
+            channel = self.active_bus.channel
+        logger.info("Entering NMT state on {} with value 0x{:02X}".format(channel, nmt_state))
+        if channel == self.default_bus.channel:
+            self._nmt_state = nmt_state
+            try:
+                self._run_indicator.set_state(nmt_state)
+            except AttributeError:
+                pass
+        else:
+            self._redundant_nmt_state = nmt_state
+            try:
+                self._redundant_run_indicator.set_state(nmt_state)
+            except AttributeError:
+                pass
         for msg in self._pending_emcy_msgs:
             self.send_emcy(msg)
 
@@ -1183,16 +1328,32 @@ class Node:
         return False
 
     def recv(self):
-        return self.bus.recv() # Returns can.Message
+        return self.active_bus.recv() # Returns can.Message
 
     def reset(self):
         logger.info("Device reset")
-        self._is_listening = False
+        self.active_bus = self.default_bus
+        self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
+        if self.redundant_bus is not None:
+            self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
         self.od = self._default_od
-        self.reset_communication()
+        if ODI_REDUNDANCY_CONFIGURATION in self.od:
+            logger.info("Node is configured for redundancy")
+            redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
+            self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
+            logger.info("Starting heartbeat evaluation timer (power-on)")
+            heartbeat_eval_time = redundancy_cfg.get(0x02).value
+            self._heartbeat_evaluation_power_on_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
+            self._heartbeat_evaluation_power_on_timer.start()
+        Thread(target=self.reset_communication, args=(self.default_bus.channel,)).start()
+        if self.redundant_bus is not None:
+            Thread(target=self.reset_communication, args=(self.redundant_bus.channel,)).start()
 
-    def reset_communication(self):
-        logger.info("Device reset communication")
+    def reset_communication(self, channel=None):
+        if channel is None:
+            channel = self.active_bus.channel
+        logger.info("Device reset communication on {}".format(channel))
+        self.nmt_state = (NMT_STATE_INITIALISATION, channel)
         self._reset_timers()
         if self._err_indicator is not None:
             self._err_indicator_timer = IntervalTimer(self._err_indicator.interval, self._process_err_indicator)
@@ -1200,8 +1361,22 @@ class Node:
         for odi, obj in self._default_od.items():
             if odi >= 0x1000 and odi <= 0x1FFF:
                 self.od.update({odi: obj})
+        if ODI_REDUNDANCY_CONFIGURATION in self.od and channel == self.active_bus.channel:
+            logger.info("Node is configured for redundancy")
+            redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
+            timer_was_running = self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
+            if channel == self.default_bus.channel and timer_was_running: # CiA 302-6, Figure 7, event (3)
+                logger.info("Restarting heartbeat evaluation timer (power-on)")
+                heartbeat_eval_time = redundancy_cfg.get(0x02).value
+                self._heartbeat_evaluation_power_on_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
+                self._heartbeat_evaluation_power_on_timer.start()
+            else: # CiA 302-6, Figure 7, event (10) or (11)
+                logger.info("Restarting heartbeat evaluation timer (reset communication")
+                heartbeat_eval_time = redundancy_cfg.get(0x03).value
+                self._heartbeat_evaluation_reset_communication_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_reset_communication_timeout)
+                self._heartbeat_evaluation_reset_communication_timer.start()
         self._pending_emcy_msgs = []
-        self._boot()
+        self._boot(channel)
 
     def reset_emcy(self):
         self._send_emcy(0)
@@ -1232,7 +1407,12 @@ class Node:
         time_cob_id = time_obj.get(ODSI_value).value
         if time_cob_id & 0x40:
             td = ts - datetime(1984, 1, 1)
-            self._send(Message(time_cob_id & 0x1FFF, self.id, struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days)))
+            msg = Message(time_cob_id & 0x1FFF, self.id, struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days))
+            max_tx_delay = None
+            if self._nmt_state == NMT_STATE_OPERATIONAL or self._nmt_state == NMT_STATE_PREOPERATIONAL:
+                self._send(msg, channel=self._default_bus.channel)
+            if self._redundant_nmt_state == NMT_STATE_OPERATIONAL or self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL:
+                self._send(msg, channel=self._redundant_bus.channel)
 
     def trigger_tpdo(self, tpdo): # Event-driven TPDO
         tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)

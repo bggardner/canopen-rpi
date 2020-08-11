@@ -68,6 +68,8 @@ class NmtMessage(Message):
             return NmtMasterRequest()
         if cmd == NMT_FORCE_FLYING_MASTER:
             return NmtForceFlyingMasterRequest()
+        if cmd == NMT_INDICATE_ACTIVE_INTERFACE:
+            return NmtIndicateActiveInterfaceMessage()
         raise NotImplementedError
 
 
@@ -121,6 +123,11 @@ class NmtMasterRequest(NmtMessage):
 class NmtForceFlyingMasterRequest(NmtMessage):
     def __init__(self):
         super().__init__(NMT_FORCE_FLYING_MASTER, bytes())
+
+
+class NmtIndicateActiveInterfaceMessage(NmtMessage):
+    def __init__(self):
+        super().__init__(NMT_INDICATE_ACTIVE_INTERFACE, bytes())
 
 
 class SyncMessage(Message):
