@@ -2,6 +2,7 @@
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
 # TODO: Check for BUS-OFF before attempting to send
 # TODO: NMT error handler (CiA302-2)
+# TODO: Make thread safe (use threading.Locks)
 from binascii import crc_hqx
 import can
 from datetime import datetime, timedelta
@@ -9,7 +10,6 @@ import io
 import logging
 import math
 import os
-from select import select
 import struct
 from threading import Event, Thread, Timer, enumerate
 from time import sleep, time
@@ -165,7 +165,8 @@ class Node:
         self._listener = can.Notifier(self.default_bus, [self._process_msg])
         if self.redundant_bus is not None:
             self._redundant_listener = can.Notifier(self.redundant_bus, [self._process_msg])
-        self._process_timers()
+        self._process_heartbeat_producer()
+        self._process_sync()
         if channel == self.active_bus.channel:
             self._nmt_startup()
 
@@ -453,6 +454,15 @@ class Node:
         else:
             logger.debug("Entering NMT slave mode")
 
+    def _on_sdo_download(self, odi, odsi, obj, sub_obj):
+        obj.update({odsi: sub_obj})
+        self.od.update({odi: obj})
+        if odi in [ODI_SYNC, ODI_SYNC_TIME]:
+            self._process_sync()
+        elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
+            self._process_heartbeat_producer()
+        Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj)).start()
+
     def _process_err_indicator(self):
         try:
             self._err_indicator.set_state(self.default_bus.state)
@@ -476,8 +486,6 @@ class Node:
             self._heartbeat_producer_timer.start()
 
     def _process_msg(self, msg: can.Message):
-        #if not self.is_listening:
-        #    return
         can_id = msg.arbitration_id
         data = msg.data
         fc = (can_id & FUNCTION_CODE_MASK) >> FUNCTION_CODE_BITNUM # Only look for restricted CAN-IDs using function code
@@ -710,6 +718,7 @@ class Node:
                                     if e == 1 and s == 1:
                                         n = (data[0] & SDO_INITIATE_N_MASK) >> SDO_INITIATE_N_BITNUM
                                         subobj.value = subobj.from_bytes(data[4:8-n])
+                                        self._on_sdo_download(odi, odsi, obj, subobj)
                                     elif e == 1 and s == 0:
                                         n = 0 # Unspecified number of bytes, default to all
                                         if data_type_index in self.od:
@@ -717,6 +726,7 @@ class Node:
                                             if ODSI_VALUE in data_type_object:
                                                 n = 4 - max(1, data_type_object.get(ODSI_VALUE).value // 8)
                                         subobj.value = subobj.from_bytes(data[4:8-n])
+                                        self._on_sdo_download(odi, odsi, obj, subobj)
                                     elif e == 0 and s == 1: # Normal (non-expedited) SDO
                                         self._sdo_odi = odi
                                         self._sdo_odsi = odsi
@@ -749,9 +759,6 @@ class Node:
                                                 self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_PREOPERATIONAL, target_node))
                                             else:
                                                 raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
-                                    obj.update({odsi: subobj}) # TODO: Don't update for some special cases (above)
-                                    self.od.update({odi: obj})
-                                    self._process_timers() # Update timers since OD was modified
                                     data = struct.pack("<BHB4x", scs << SDO_CS_BITNUM, odi, odsi)
                                 elif ccs == SDO_CCS_DOWNLOAD_SEGMENT:
                                     if self._sdo_data is None:
@@ -770,9 +777,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        obj.update({self._sdo_odsi: subobj})
-                                        self.od.update({self._sdo_odi: obj})
-                                        self._process_timers() # Update timers since OD was modified
+                                        self._on_sdo_download(odi, odsi, obj, subobj)
                                         self._sdo_data = None
                                         self._sdo_data_type = None
                                         self._sdo_len = None
@@ -891,9 +896,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        obj.update({self._sdo_odsi: subobj})
-                                        self.od.update({self._sdo_odi: obj})
-                                        self._process_timers() # Update timers since OD was modified
+                                        self._on_sdo_download(odi, odsi, obj, subobj)
                                         self._sdo_cs = None
                                         self._sdo_data = None
                                         self._sdo_len = None
@@ -1079,10 +1082,6 @@ class Node:
         if is_sync_producer and sync_time != 0:
             self._sync_timer = IntervalTimer(sync_time, self._send_sync)
             self._sync_timer.start()
-
-    def _process_timers(self):
-        self._process_heartbeat_producer()
-        self._process_sync()
 
     def _reset_timers(self):
         for t in self._message_timers:
@@ -1326,6 +1325,9 @@ class Node:
             if nmt_startup & 0x01:
                 return True
         return False
+
+    def on_sdo_download(self, odi, odsi, obj, sub_obj):
+        pass
 
     def recv(self):
         return self.active_bus.recv() # Returns can.Message
