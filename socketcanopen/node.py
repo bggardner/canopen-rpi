@@ -1114,7 +1114,7 @@ class Node:
     def _send(self, msg: can.Message, channel=None):
         if channel is None:
             bus = self.active_bus
-        elif channel == self.redundant_bus.channel:
+        elif self.redundant_bus is not None and channel == self.redundant_bus.channel:
             bus = self.redundant_bus
         else:
             bus = self.default_bus
@@ -1191,7 +1191,8 @@ class Node:
         msg = HeartbeatMessage(self.id, self.nmt_state)
         if not self._default_bus_heartbeat_disabled:
             self._send(msg, self.default_bus.channel)
-        self._send(msg, self.redundant_bus.channel)
+        if self.redundant_bus is not None:
+            self._send(msg, self.redundant_bus.channel)
 
     def _send_pdo(self, i):
         i = i - 1
@@ -1237,11 +1238,11 @@ class Node:
                                     t = Timer(time() - self._tpdo_inhibit_times[i], self._send, [msg, self.redundant_bus.channel])
                                     t.start()
                                     self._message_timers.append(t)
-                        # CiA 302-6, 4.1.2.2(a)
-                        if self._nmt_state == NMT_STATE_OPERATIONAL:
-                            self._send(msg, self.default_bus.channel, timeout=max_tx_delay)
-                        if self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
-                            self._send(msg, self.redundant_bus.channel, timeout=max_tx_delay)
+                        else:
+                            if self._nmt_state == NMT_STATE_OPERATIONAL:
+                                 self._send(msg, self.default_bus.channel)
+                            if self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
+                                 self._send(msg, self.redundant_bus.channel)
 
     def _send_sync(self):
         sync_object = self.od.get(ODI_SYNC)
