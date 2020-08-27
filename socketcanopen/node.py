@@ -2,17 +2,16 @@
 #      See http://stackoverflow.com/questions/2829329/catch-a-threads-exception-in-the-caller-thread-in-python
 # TODO: Check for BUS-OFF before attempting to send
 # TODO: NMT error handler (CiA302-2)
-# TODO: Make thread safe (use threading.Locks)
 from binascii import crc_hqx
 import can
-from datetime import datetime, timedelta
+import datetime
 import io
 import logging
 import math
 import os
 import struct
-from threading import Event, Thread, Timer, enumerate
-from time import sleep, time
+import threading
+import time
 
 from .constants import *
 from .indicators import *
@@ -21,7 +20,7 @@ from .object_dictionary import *
 
 logger = logging.getLogger(__name__)
 
-class IntervalTimer(Thread):
+class IntervalTimer(threading.Thread):
     """Call a function every specified number of seconds:
 
             t = IntervalTimer(30.0, f, args=None, kwargs=None)
@@ -35,7 +34,7 @@ class IntervalTimer(Thread):
         self.function = function
         self.args = args if args is not None else []
         self.kwargs = kwargs if kwargs is not None else {}
-        self.finished = Event()
+        self.finished = threading.Event()
 
     def cancel(self):
         self.finished.set()
@@ -137,7 +136,8 @@ class Node:
         self._sdo_t = None
         self._sync_counter = 0
         self._sync_timer = None
-        self._timedelta = timedelta()
+        self._sync_timer_lock = threading.Lock()
+        self._timedelta = datetime.timedelta()
         self._tpdo_inhibit_times = {}
         self._tpdo_triggers = [False, False, False, False]
 
@@ -171,7 +171,7 @@ class Node:
             self._nmt_startup()
 
     @staticmethod
-    def _cancel_timer(timer: Timer):
+    def _cancel_timer(timer: threading.Timer):
         if timer is not None and timer.is_alive():
             timer.cancel()
             return True
@@ -256,11 +256,11 @@ class Node:
         if boot_time_obj is not None:
             boot_time = boot_time_obj.get(ODSI_VALUE).value / 1000
             if boot_time > 0:
-                self._nmt_boot_timer = Timer(boot_time, self._nmt_boot_timeout)
+                self._nmt_boot_timer = threading.Timer(boot_time, self._nmt_boot_timeout)
                 self._nmt_boot_timer.start()
         self._nmt_slave_booters = {}
         for slave_id in mandatory_slaves:
-            self._nmt_slave_booters[slave_id] = {"thread": Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None}
+            self._nmt_slave_booters[slave_id] = {"thread": threading.Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None}
             self._nmt_slave_booters[slave_id]["thread"].start()
         mandatory_slaves_booted = 0
         while (len(mandatory_slaves) > mandatory_slaves_booted) and not self._nmt_boot_time_expired:
@@ -275,7 +275,7 @@ class Node:
                     slave_nmt_state = request_nmt_obj.get(slave_id)
                     if slave_nmt_state is not None and slave_nmt_state.value > 0x01:
                         mandatory_slaves_booted += 1
-            sleep(0.25)
+            time.sleep(0.25)
         if self._nmt_boot_time_expired:
             logger.warning("NMT boot time expired before all mandatory slaves booted, halting NMT boot")
             return
@@ -302,7 +302,7 @@ class Node:
         if self._nmt_active_master_id not in self._heartbeat_consumer_timers: # See CiA 302-2 v4.1.0, section 5.5.2
             logger.debug("Active NMT master not in heartbeat consumers; timeout will be twice heartbeat producer time")
             heartbeat_producer_time = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME).get(ODSI_VALUE).value
-            self._nmt_active_master_timer = Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
+            self._nmt_active_master_timer = threading.Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
             self._nmt_active_master_timer.start()
 
     def _nmt_boot_slave(self, slave_id):
@@ -367,7 +367,7 @@ class Node:
                     if (consumer_heartbeat_time & 0xFFFF) > 0:
                         if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
                             break # Heartbeat indication received
-                        sleep((consumer_heartbeat_time & 0xFFFF) / 1000) # Check again after waiting
+                        time.sleep((consumer_heartbeat_time & 0xFFFF) / 1000) # Check again after waiting
                         if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
                             break # Heartbeat indication received
                         self._nmt_slave_booters[slave_id]["status"] = "K"
@@ -407,7 +407,7 @@ class Node:
         device_time_slot = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DEVICE_TIME_SLOT).value
         self._cancel_timer(self._nmt_flying_master_timer)
         flying_master_response_wait_time = (priority * priority_time_slot + self.id * device_time_slot) / 1000
-        self._nmt_flying_master_timer = Timer(flying_master_response_wait_time, self._nmt_flying_master_negotiation_timeout)
+        self._nmt_flying_master_timer = threading.Timer(flying_master_response_wait_time, self._nmt_flying_master_negotiation_timeout)
         self._nmt_flying_master_timer.start()
 
     def _nmt_flying_master_negotiation_request(self):
@@ -428,12 +428,12 @@ class Node:
         if flying_master_params is None:
             raise RuntimeException("Device is configured as NMT flying master, but object dictionary parameters do not exist")
         flying_master_negotiation_delay = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DELAY).value
-        sleep(flying_master_negotiation_delay / 1000)
+        time.sleep(flying_master_negotiation_delay / 1000)
         logger.debug("Service active NMT master detection")
         self.send_nmt(NmtActiveMasterRequest())
         self._cancel_timer(self._nmt_active_master_timer)
         active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value / 1000
-        self._nmt_active_master_timer = Timer(active_nmt_master_timeout_time, self._nmt_active_master_timeout)
+        self._nmt_active_master_timer = threading.Timer(active_nmt_master_timeout_time, self._nmt_active_master_timeout)
         self._nmt_active_master_timer.start()
 
     def _nmt_startup(self):
@@ -461,7 +461,7 @@ class Node:
             self._process_sync()
         elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
             self._process_heartbeat_producer()
-        Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj)).start()
+        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj)).start()
 
     def _process_err_indicator(self):
         try:
@@ -580,7 +580,7 @@ class Node:
                 if heartbeat_producer_object is not None:
                     heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
                     if heartbeat_producer_value is not None and heartbeat_producer_value.value != 0:
-                        self._nmt_active_master_timer = Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
+                        self._nmt_active_master_timer = threading.Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
                         self._nmt_active_master_timer.start()
 
             heartbeat_consumer_time = 0
@@ -594,12 +594,12 @@ class Node:
                             heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
                             break
             if heartbeat_consumer_time != 0:
-                heartbeat_consumer_timer = Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
+                heartbeat_consumer_timer = threading.Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
                 if self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
                     self._cancel_timer(self._nmt_active_master_timer)
-                    self._nmt_active_master_timer = Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
+                    self._nmt_active_master_timer = threading.Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
                     self._nmt_active_master_timer.start()
             request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
             if request_nmt_obj is not None:
@@ -650,9 +650,9 @@ class Node:
                     if time_cob_id & 0x80 and time_cob_id & 0x1FFFF == can_id:
                         ms, d = struct.unpack("<IH", data[0:6])
                         ms = ms >> 4
-                        td = timedelta(days=d, milliseconds=ms)
-                        ts = datetime(1980, 1, 1) + td
-                        self._timedelta = ts - datetime.now()
+                        td = datetime.timedelta(days=d, milliseconds=ms)
+                        ts = datetime.datetime(1980, 1, 1) + td
+                        self._timedelta = ts - datetime.datetime.now()
             if (
                    (msg.channel == self.default_bus.channel and (self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL))
                    or
@@ -1078,10 +1078,11 @@ class Node:
                 sync_time = sync_time_value.value / 1000000
         else:
             sync_time = 0
-        self._cancel_timer(self._sync_timer)
-        if is_sync_producer and sync_time != 0:
-            self._sync_timer = IntervalTimer(sync_time, self._send_sync)
-            self._sync_timer.start()
+        with self._sync_timer_lock:
+            self._cancel_timer(self._sync_timer)
+            if is_sync_producer and sync_time != 0:
+                self._sync_timer = IntervalTimer(sync_time, self._send_sync)
+                self._sync_timer.start()
 
     def _reset_timers(self):
         for t in self._message_timers:
@@ -1106,7 +1107,7 @@ class Node:
         for i in range(math.ceil(SDO_TIMEOUT / SDO_ROUND_TRIP_TIME)):
             if self._sdo_requests[sdo_server_rx_can_id] is not None:
                 break
-            sleep(SDO_MESSAGE_TIME)
+            time.sleep(SDO_MESSAGE_TIME)
         if self._sdo_requests[sdo_server_rx_can_id] is None or (self._sdo_requests[sdo_server_rx_can_id][0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
             return
         return self._sdo_requests[sdo_server_rx_can_id]
@@ -1170,15 +1171,15 @@ class Node:
             emcy_inhibit_time_subobj = emcy_inhibit_time_obj.get(ODSI_VALUE)
             if emcy_inhibit_time_subobj.value != 0:
                 emcy_inhibit_time = emcy_inhibit_time_subobj.value / 10000
-                if self._emcy_inhibit_time + emcy_inhibit_time < time():
+                if self._emcy_inhibit_time + emcy_inhibit_time < time.time():
                     logger.info("EMCY inhibit time violation, delaying message")
                     self._emcy_inhibit_time += emcy_inhibit_time
                     if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
-                        t = Timer(time() - self._emcy_inhibit_time, self._send, [msg, self.default_bus.channel])
+                        t = threading.Timer(time.time() - self._emcy_inhibit_time, self._send, [msg, self.default_bus.channel])
                         t.start()
                         self._message_timers.append(t)
                     if self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
-                        t = Timer(time() - self._emcy_inhibit_time, self._send, [msg, self.redundant_bus.channel])
+                        t = threading.Timer(time.time() - self._emcy_inhibit_time, self._send, [msg, self.redundant_bus.channel])
                         t.start()
                         self._message_timers.append(t)
                     return
@@ -1226,16 +1227,16 @@ class Node:
                             tpdo_inhibit_time = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_INHIBIT_TIME).value / 10000
                             if i not in self._tpdo_inibit_time:
                                 self._tpdo_inhibit_times[i] = 0
-                            if self._tpdo_inhibit_times[i] + tpdo_inhibit_time < time():
+                            if self._tpdo_inhibit_times[i] + tpdo_inhibit_time < time.time():
                                 logger.info("TPDO{} inhibit time violation, delaying message".format(i))
                                 self._tpdo_inhibit_times[i] += tpdo_inhibit_time
                                 # CiA 302-6, 4.1.2.2(a)
                                 if self._nmt_state == NMT_STATE_OPERATIONAL:
-                                    t = Timer(time() - self._tpdo_inhibit_times[i], self._send, [msg, self.default_bus.channel])
+                                    t = threading.Timer(time.time() - self._tpdo_inhibit_times[i], self._send, [msg, self.default_bus.channel])
                                     t.start()
                                     self._message_timers.append(t)
                                 if self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
-                                    t = Timer(time() - self._tpdo_inhibit_times[i], self._send, [msg, self.redundant_bus.channel])
+                                    t = threading.Timer(time.time() - self._tpdo_inhibit_times[i], self._send, [msg, self.redundant_bus.channel])
                                     t.start()
                                     self._message_timers.append(t)
                         else:
@@ -1346,11 +1347,11 @@ class Node:
             self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
             logger.info("Starting heartbeat evaluation timer (power-on)")
             heartbeat_eval_time = redundancy_cfg.get(0x02).value
-            self._heartbeat_evaluation_power_on_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
+            self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
             self._heartbeat_evaluation_power_on_timer.start()
-        Thread(target=self.reset_communication, args=(self.default_bus.channel,)).start()
+        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,)).start()
         if self.redundant_bus is not None:
-            Thread(target=self.reset_communication, args=(self.redundant_bus.channel,)).start()
+            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,)).start()
 
     def reset_communication(self, channel=None):
         if channel is None:
@@ -1371,12 +1372,12 @@ class Node:
             if channel == self.default_bus.channel and timer_was_running: # CiA 302-6, Figure 7, event (3)
                 logger.info("Restarting heartbeat evaluation timer (power-on)")
                 heartbeat_eval_time = redundancy_cfg.get(0x02).value
-                self._heartbeat_evaluation_power_on_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
+                self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
                 self._heartbeat_evaluation_power_on_timer.start()
             else: # CiA 302-6, Figure 7, event (10) or (11)
                 logger.info("Restarting heartbeat evaluation timer (reset communication")
                 heartbeat_eval_time = redundancy_cfg.get(0x03).value
-                self._heartbeat_evaluation_reset_communication_timer = Timer(heartbeat_eval_time, self._heartbeat_evaluation_reset_communication_timeout)
+                self._heartbeat_evaluation_reset_communication_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_reset_communication_timeout)
                 self._heartbeat_evaluation_reset_communication_timer.start()
         self._pending_emcy_msgs = []
         self._boot(channel)
@@ -1390,10 +1391,10 @@ class Node:
             nmt_inhibit_time_subobj = nmt_inhibit_time_obj.get(ODSI_VALUE)
             if nmt_inhibit_time_subobj.value != 0:
                 nmt_inhibit_time = nmt_inhibit_time_subobj.value / 1000
-                if self._nmt_inhibit_time + nmt_inhibit_time < time():
+                if self._nmt_inhibit_time + nmt_inhibit_time < time.time():
                     logger.info("NMT inhibit time violation, delaying message")
                     self._nmt_inhibit_time += nmt_inhibit_time
-                    t = Timer(time() - self._nmt_inhibit_time, self._send, [msg])
+                    t = threading.Timer(time.time() - self._nmt_inhibit_time, self._send, [msg])
                     t.start()
                     self._message_timers.append(t)
                     return
@@ -1401,7 +1402,7 @@ class Node:
 
     def send_time(self, ts=None):
         if ts is None:
-            ts = datetime.now() + self._timedelta
+            ts = datetime.datetime.now() + self._timedelta
         if not isinstance(ts, datetime):
             raise ValueError("Timestamp must be of type datetime")
         time_obj = self.od.get(ODI_TIME_STAMP)
@@ -1409,7 +1410,7 @@ class Node:
             return False
         time_cob_id = time_obj.get(ODSI_value).value
         if time_cob_id & 0x40:
-            td = ts - datetime(1984, 1, 1)
+            td = ts - datetime.datetime(1984, 1, 1)
             msg = Message(time_cob_id & 0x1FFF, self.id, struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days))
             max_tx_delay = None
             if self._nmt_state == NMT_STATE_OPERATIONAL or self._nmt_state == NMT_STATE_PREOPERATIONAL:

@@ -1,8 +1,9 @@
 from collections import Mapping, MutableMapping
 from configparser import ConfigParser
-from datetime import datetime, timedelta
+import datetime
 from enum import Enum, IntEnum, unique
 import struct
+from threading import Lock
 
 from .constants import *
 
@@ -468,7 +469,7 @@ class ProtoObject(MutableMapping):
             self.data_type = DataType(kwargs["data_type"])
         if "access_type" not in kwargs:
             if self.object_type in [ObjectType.DEFTYPE, ObjectType.VAR]:
-                raise ValueError
+                raise ValueError("Access type is required for DEFTYPE and VAR objects")
             elif self.object_type == ObjectType.DOMAIN:
                 self.access_type = AccessType.RW
             else:
@@ -500,12 +501,15 @@ class ProtoObject(MutableMapping):
             self.high_limit = kwargs["high_limit"]
         else:
             self.high_limit = None
+        self._lock = Lock()
 
-    def __getitem__(self, subindex):
-        return self._store[subindex]
+    def __getitem__(self, sub_index):
+        with self._lock:
+            return self._store[sub_index]
 
-    def __delitem__(self, subindex):
-        del self._store[subindex]
+    def __delitem__(self, sub_index):
+        with self._lock:
+            del self._store[sub_index]
 
     def __iter__(self):
         return iter(self._store)
@@ -520,14 +524,15 @@ class ProtoObject(MutableMapping):
         return len(self._store) - 1 # Don't count sub-index 0
 
     def __setitem__(self, name, value):
-        super().__setitem__(name, value)
+        with self._lock:
+            super().__setitem__(name, value)
 
     def update(self, other=None, **kwargs):
         if other is not None:
-            for subindex, value in other.items() if isinstance(other, Mapping) else other:
-                self[subindex] = value
-            for subindex, value in kwargs.items():
-                self[subindex] = value
+            for sub_index, value in other.items() if isinstance(other, Mapping) else other:
+                self[sub_index] = value
+            for sub_index, value in kwargs.items():
+                self[sub_index] = value
 
     @staticmethod
     def from_config(cfg, node_id):
@@ -644,7 +649,7 @@ class SubObject(ProtoObject):
     def __init__(self, **kwargs):
         #kwargs["object_type"] = ObjectType.VAR
         super().__init__(**kwargs)
-        self.value = self.default_value
+        self._value = self.default_value
 
     def __bytes__(self):
         if self.data_type == ODI_DATA_TYPE_BOOLEAN:
@@ -692,10 +697,10 @@ class SubObject(ProtoObject):
                 return bytes(self.value, 'ascii') # CANopen Visible String encoding is ISO 646-1974 (ASCII)
             if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
                 return bytes(self.value, 'utf_16') # CANopen Unicode Strings are arrays of UNSIGNED16, assuming UTF-16
-        if isinstance(self.value, datetime):
-            td = self.value - datetime(1984, 1, 1)
+        if isinstance(self.value, datetime.datetime):
+            td = self.value - datetime.datetime(1984, 1, 1)
             return struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days)
-        if isinstance(self.value, timedelta):
+        if isinstance(self.value, datetime.timedelta):
             return struct.pack("<IH", int(self.value.seconds * 1000 + self.value.microseconds / 1000) << 4, self.value.days)
         return bytes(self.value) # Try casting if nothing else worked; custom data types should implement __bytes__()
 
@@ -735,18 +740,31 @@ class SubObject(ProtoObject):
         if self.data_type == ODI_DATA_TYPE_TIME_OF_DAY:
             ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
-            td = timedelta(days=d, milliseconds=ms)
-            return datetime(1980, 1, 1) + td
+            td = datetime.timedelta(days=d, milliseconds=ms)
+            return datetime.datetime(1980, 1, 1) + td
         if self.data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
             ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
-            return timedelta(days=d, milliseconds=ms)
+            return datetime.timedelta(days=d, milliseconds=ms)
         return b # ODI_DATA_TYPE_OCTET_STRING or ODI_DATA_TYPE_DOMAIN
 
     def __setitem__(self, name, value):
-        if name == "value" and type(value) not in [bool, int, float, str, bytes, bytearray, datetime, timedelta] and not hasattr(value, "read"): # TODO: Somehow support DOMAIN data type
-            raise TypeError("CANopen objects can only be set to one of bool, int, float, str, bytes, bytearray, datetime, or timedelta")
+        if name == "value":
+            self.value = value
+            return
         super().__setattr__(name,  value)
+
+    @property
+    def value(self):
+        with self._lock:
+            return self._value
+
+    @value.setter
+    def value(self, value):
+        if type(value) not in [bool, int, float, str, bytes, bytearray, datetime.datetime, datetime.timedelta] and not hasattr(value, "read"):
+            raise TypeError("CANopen objects can only be set to one of bool, int, float, str, bytes, bytearray, datetime, timedelta, or file-like object")
+        with self._lock:
+            self._value = value
 
     @classmethod
     def from_config(cls, cfg, node_id):
@@ -812,19 +830,19 @@ class Object(ProtoObject):
                 raise TypeError
             self._store.update(kwargs["subs"])
 
-    def __setitem__(self, subindex, sub_object: SubObject):
-        if subindex == "value":
-            subindex = ODSI_VALUE
+    def __setitem__(self, sub_index, sub_object: SubObject):
+        if sub_index == "value":
+            sub_index = ODSI_VALUE
             value = sub_object
-            sub_object = self.get(subindex)
+            sub_object = self.get(sub_index)
             sub_object.value = value
-        if type(subindex) is not int:
+        if type(sub_index) is not int:
             raise TypeError("CANopen object sub-index must be an integer")
-        if subindex < 0 or subindex >= 2 ** 8:
+        if sub_index < 0 or sub_index >= 2 ** 8:
             raise IndexError("CANopen object sub-index must be a positive 8-bit integer")
         if type(sub_object) is not SubObject:
             raise TypeError("Must be a SubObject")
-        self._store[subindex] = sub_object
+        self._store[sub_index] = sub_object
 
     @classmethod
     def from_config(cls, cfg, node_id, subs):
