@@ -463,7 +463,7 @@ class Node:
             self._process_sync()
         elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
             self._process_heartbeat_producer()
-        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj)).start()
+        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj), daemon=True).start()
 
     def _process_err_indicator(self):
         try:
@@ -1351,9 +1351,9 @@ class Node:
             heartbeat_eval_time = redundancy_cfg.get(0x02).value
             self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
             self._heartbeat_evaluation_power_on_timer.start()
-        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,)).start()
+        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,), daemon=True).start()
         if self.redundant_bus is not None:
-            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,)).start()
+            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,), daemon=True).start()
 
     def reset_communication(self, channel=None):
         if channel is None:
