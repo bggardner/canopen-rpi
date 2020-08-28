@@ -29,7 +29,7 @@ class IntervalTimer(threading.Thread):
     """
 
     def __init__(self, interval, function, args=None, kwargs=None):
-        super().__init__(args=args, kwargs=kwargs)
+        super().__init__(args=args, kwargs=kwargs, daemon=True)
         self.interval = interval
         self.function = function
         self.args = args if args is not None else []
@@ -40,10 +40,12 @@ class IntervalTimer(threading.Thread):
         self.finished.set()
 
     def run(self):
-        while not self.finished.wait(self.interval):
+        next_run = time.time() + self.interval
+        while not self.finished.wait(next_run - time.time()):
             if self.finished.is_set():
                 break
-            self.function(*self.args, **self.kwargs)
+            threading.Thread(target=self.function, args=self.args, kwargs=self.kwargs, daemon=True).start()
+            next_run += self.interval
 
 
 class SdoAbort(Exception):
