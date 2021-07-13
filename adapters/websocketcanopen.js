@@ -621,6 +621,11 @@ class CanOpenSdoMessage extends CanOpenMessage {
    * @type {number}
    */
   get cs() { return (this.data[0] >> CanOpenSdoMessage.CS_BITNUM) & 0x7; }
+
+  static from(buffer) {
+    msg = super.from(buffer);
+    return new this(msg.functionCode, msg.nodeId, msg.data[0], msg.data.slice(1,8));
+  }
 }
 
 const CanOpenSdoInitiateMixIn = superclass => class extends superclass {
@@ -688,6 +693,7 @@ class CanOpenSdoAbortResponse extends CanOpenSdoAbortMixIn(CanOpenSdoResponse) {
 
 class CanOpenSdoDownloadInitiateRequest extends CanOpenSdoInitiateMixIn(CanOpenSdoRequest) {
   constructor(nodeId, n, e, s, index, subIndex, data) {
+    if (typeof(data) == "number") { data = new Uint32Array([data]); }
     let sdoHeader = CanOpenSdoMessage.CCS_DOWNLOAD_INITIATE << CanOpenSdoMessage.CS_BITNUM;
     sdoHeader += n << CanOpenSdoDownloadInitiateRequest.N_BITNUM;
     sdoHeader += e << CanOpenSdoDownloadInitiateRequest.E_BITNUM;
@@ -996,12 +1002,12 @@ class CanOpenTimeDataType {
     return {
       next() {
         switch(this.cursor_++) {
-          case 0: return {value: tod.milliseconds && 0xFF, done: false};
+          case 0: return {value: tod.milliseconds & 0xFF, done: false};
           case 1: return {value: (tod.milliseconds >> 8) & 0xFF, done: false};
-          case 2: return {value: (tod.milliseconds >> 16) & 0xFF,done: false};
-          case 3: return {value: tod.milliseconds >> 24, done: false};
+          case 2: return {value: (tod.milliseconds >> 16) & 0xFF, done: false};
+          case 3: return {value: (tod.milliseconds >> 24) & 0xFF, done: false};
           case 4: return {value: tod.days & 0xFF, done: false};
-          case 5: return {value: tod.days >> 8, done: false};
+          case 5: return {value: (tod.days >> 8) & 0xFF, done: false};
           case 6:
             this.cursor_ = 0;
             return {done: true};

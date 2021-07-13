@@ -465,6 +465,18 @@ class Node:
             self._process_heartbeat_producer()
         threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj), daemon=True).start()
 
+    def _on_sync(self):
+        self._sync_counter = (self._sync_counter + 1) % 241
+        for i in range(4):
+            tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
+            if tpdo_cp is not None:
+                tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
+                    tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                    if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
+                        self._send_pdo(i + 1)
+        threading.Thread(target=self.on_sync, daemon=True).start()
+
     def _process_err_indicator(self):
         try:
             self._err_indicator.set_state(self.default_bus.state)
@@ -636,15 +648,7 @@ class Node:
                 if sync_obj is not None:
                     sync_obj_value = sync_obj.get(ODSI_VALUE)
                     if sync_obj_value is not None and (sync_obj_value.value & 0x1FFFFFFF) == can_id:
-                        self._sync_counter = (self._sync_counter + 1) % 241
-                        for i in range(4):
-                            tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
-                            if tpdo_cp is not None:
-                                tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                                if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                                    tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                                    if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
-                                        self._send_pdo(i + 1)
+                        self._on_sync()
             if (self.nmt_state == NMT_STATE_PREOPERATIONAL or self.nmt_state == NMT_STATE_OPERATIONAL) and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
                 time_obj = self.od.get(ODI_TIME_STAMP)
                 if time_obj is not None:
@@ -779,7 +783,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        self._on_sdo_download(odi, odsi, obj, subobj)
+                                        self._on_sdo_download(self._sdo_odi, self._sdo_odsi, obj, subobj)
                                         self._sdo_data = None
                                         self._sdo_data_type = None
                                         self._sdo_len = None
@@ -898,7 +902,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        self._on_sdo_download(odi, odsi, obj, subobj)
+                                        self._on_sdo_download(self._sdo_odi, self._sdo_odsi, obj, subobj)
                                         self._sdo_cs = None
                                         self._sdo_data = None
                                         self._sdo_len = None
@@ -1331,6 +1335,9 @@ class Node:
         return False
 
     def on_sdo_download(self, odi, odsi, obj, sub_obj):
+        pass
+
+    def on_sync(self):
         pass
 
     def recv(self):
