@@ -244,7 +244,7 @@ class CanOpenSdoClient extends EventTarget {
         this.send_(new CanOpenSdoBlockUploadStartRequest(this.transaction.nodeId));
       } else { // ss == CanOpenSdoBlockMessage.SUBCOMMAND_END
         let n = (msg.data[0] >> 2) & 0x7;
-        this.transaction.data.splice(-n);
+        this.transaction.data.splice(-n, n);
         let crc = new Uint16Array(msg.data.slice(1,3).buffer)[0];
         if (this.transaction.hasOwnProperty("crc") && this.transaction.crc != crc) { return this.abort(CanOpenSdoAbortRequest.ABORT_CRC_ERROR); }
         this.send_(new CanOpenSdoBlockUploadEndResponse(this.transaction.nodeId));
