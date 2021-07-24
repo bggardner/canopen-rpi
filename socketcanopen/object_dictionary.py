@@ -414,10 +414,9 @@ class ObjectDictionary(MutableMapping):
                         default_value=sub_number
                     )
                 }
-                for si in range(1, sub_number):
+                for si in range(1, sub_number + 1):
                     soc = dict(oc)
                     soc["ParameterName"] = names.get(si, "{}{}".format(soc["ParameterName"], si))
-                    print(soc["ParameterName"])
                     soc["ObjectType"] = "0x{:X}".format(ObjectType.VAR)
                     soc["DefaultValue"] = values.get(si, soc["DefaultValue"])
                     sub = SubObject.from_config(soc, node_id)
