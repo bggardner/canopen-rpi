@@ -141,7 +141,7 @@ class Node:
         self._tpdo_inhibit_times = {}
         self._tpdo_triggers = [False, False, False, False]
 
-        if "redundant_bus" in kwargs:
+        if od.get(ODI_REDUNDANCY_CONFIGURATION) is not None and "redundant_bus" in kwargs:
             if not isinstance(kwargs["redundant_bus"], can.BusABC):
                 raise TypeError
             self.redundant_bus = kwargs["redundant_bus"]

@@ -383,8 +383,8 @@ class ObjectDictionary(MutableMapping):
 
     @classmethod
     def from_eds(cls, filename, node_id=None):
-        # TODO: Support CompactSubObj directive
         eds = ConfigParser()
+        eds.optionxform = str # Do not lower-case section names
         eds.read(filename)
         if node_id is None:
             node_id = int(eds['DeviceCommissioning']['NodeID'], 0)
@@ -398,15 +398,40 @@ class ObjectDictionary(MutableMapping):
         od = cls()
         for i in indices:
             oc = eds["{:4X}".format(i)]
-            sub_number = ProtoObject._int_from_config_str(oc.get('SubNumber', '0'))
-            subs = {}
-            si = 0
-            while len(subs) <= sub_number and si <= 0xFF:
-                key = "{:4X}sub{:d}".format(i, si)
-                if key in eds:
-                    sub = SubObject.from_config(eds[key], node_id)
+            cso = oc.get('CompactSubObj')
+            if cso is not None:
+                sub_number = ProtoObject._int_from_config_str(cso)
+                names = eds["{:4X}Name".format(i)] if eds.has_section("{:4X}Name".format(i)) else {}
+                values = eds["{:4X}Value".format(i)] if eds.has_section("{:4X}Value".format(i)) else {}
+                subs = {
+                    0: SubObject(
+                        parameter_name="NrOfObjects",
+                        object_type=ObjectType.VAR,
+                        access_type=AccessType.RO,
+                        data_type=ODI_DATA_TYPE_UNSIGNED8,
+                        low_limit=1,
+                        high_limit=sub_number,
+                        default_value=sub_number
+                    )
+                }
+                for si in range(1, sub_number):
+                    soc = dict(oc)
+                    soc["ParameterName"] = names.get(si, "{}{}".format(soc["ParameterName"], si))
+                    print(soc["ParameterName"])
+                    soc["ObjectType"] = "0x{:X}".format(ObjectType.VAR)
+                    soc["DefaultValue"] = values.get(si, soc["DefaultValue"])
+                    sub = SubObject.from_config(soc, node_id)
                     subs.update({si: sub})
-                si += 1
+            else:
+                sub_number = ProtoObject._int_from_config_str(oc.get('SubNumber', '0'))
+                subs = {}
+                si = 0
+                while len(subs) <= sub_number and si <= 0xFF:
+                    key = "{:4X}sub{:d}".format(i, si)
+                    if key in eds:
+                        sub = SubObject.from_config(eds[key], node_id)
+                        subs.update({si: sub})
+                    si += 1
             # TODO Check for mandatory properties based on Object.ObjectType
             # TODO: Assign proper data type to subs if Object.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]
             o = Object.from_config(oc, node_id, subs)
