@@ -29,7 +29,7 @@ class IntervalTimer(threading.Thread):
     """
 
     def __init__(self, interval, function, args=None, kwargs=None):
-        super().__init__(args=args, kwargs=kwargs)
+        super().__init__(args=args, kwargs=kwargs, daemon=True)
         self.interval = interval
         self.function = function
         self.args = args if args is not None else []
@@ -40,10 +40,12 @@ class IntervalTimer(threading.Thread):
         self.finished.set()
 
     def run(self):
-        while not self.finished.wait(self.interval):
+        next_run = time.time() + self.interval
+        while not self.finished.wait(next_run - time.time()):
             if self.finished.is_set():
                 break
-            self.function(*self.args, **self.kwargs)
+            threading.Thread(target=self.function, args=self.args, kwargs=self.kwargs, daemon=True).start()
+            next_run += self.interval
 
 
 class SdoAbort(Exception):
@@ -461,7 +463,19 @@ class Node:
             self._process_sync()
         elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
             self._process_heartbeat_producer()
-        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj)).start()
+        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj), daemon=True).start()
+
+    def _on_sync(self):
+        self._sync_counter = (self._sync_counter + 1) % 241
+        for i in range(4):
+            tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
+            if tpdo_cp is not None:
+                tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
+                    tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                    if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
+                        self._send_pdo(i + 1)
+        threading.Thread(target=self.on_sync, daemon=True).start()
 
     def _process_err_indicator(self):
         try:
@@ -634,15 +648,7 @@ class Node:
                 if sync_obj is not None:
                     sync_obj_value = sync_obj.get(ODSI_VALUE)
                     if sync_obj_value is not None and (sync_obj_value.value & 0x1FFFFFFF) == can_id:
-                        self._sync_counter = (self._sync_counter + 1) % 241
-                        for i in range(4):
-                            tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
-                            if tpdo_cp is not None:
-                                tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                                if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                                    tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                                    if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
-                                        self._send_pdo(i + 1)
+                        self._on_sync()
             if (self.nmt_state == NMT_STATE_PREOPERATIONAL or self.nmt_state == NMT_STATE_OPERATIONAL) and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
                 time_obj = self.od.get(ODI_TIME_STAMP)
                 if time_obj is not None:
@@ -777,7 +783,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        self._on_sdo_download(odi, odsi, obj, subobj)
+                                        self._on_sdo_download(self._sdo_odi, self._sdo_odsi, obj, subobj)
                                         self._sdo_data = None
                                         self._sdo_data_type = None
                                         self._sdo_len = None
@@ -896,7 +902,7 @@ class Node:
                                         obj = self.od.get(self._sdo_odi)
                                         subobj = obj.get(self._sdo_odsi)
                                         subobj.value = subobj.from_bytes(self._sdo_data)
-                                        self._on_sdo_download(odi, odsi, obj, subobj)
+                                        self._on_sdo_download(self._sdo_odi, self._sdo_odsi, obj, subobj)
                                         self._sdo_cs = None
                                         self._sdo_data = None
                                         self._sdo_len = None
@@ -1331,6 +1337,9 @@ class Node:
     def on_sdo_download(self, odi, odsi, obj, sub_obj):
         pass
 
+    def on_sync(self):
+        pass
+
     def recv(self):
         return self.active_bus.recv() # Returns can.Message
 
@@ -1349,9 +1358,9 @@ class Node:
             heartbeat_eval_time = redundancy_cfg.get(0x02).value
             self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
             self._heartbeat_evaluation_power_on_timer.start()
-        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,)).start()
+        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,), daemon=True).start()
         if self.redundant_bus is not None:
-            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,)).start()
+            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,), daemon=True).start()
 
     def reset_communication(self, channel=None):
         if channel is None:
