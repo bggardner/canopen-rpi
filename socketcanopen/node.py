@@ -972,7 +972,7 @@ class Node:
                                             data_len -= 7
                                             self._sdo_seqno += 1
                                         if hasattr(self._sdo_data, "seek"):
-                                            self._sdo_data.seek((1 - self._sdo_seqno) * 7, io.SEEK_CUR)
+                                            self._sdo_data.seek((1 - self._sdo_seqno) * 7 - min(0, data_len), io.SEEK_CUR)
                                         return
                                     elif cs == SDO_BLOCK_SUBCOMMAND_RESPONSE:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
@@ -1005,7 +1005,7 @@ class Node:
                                         else:
                                             data_len = len(self._sdo_data)
                                         logger.info("{} bytes remaining in SDO block upload".format(data_len))
-                                        if data_len == 0:
+                                        if data_len <= 0:
                                             crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
                                             data = struct.pack("<BH5x", (SDO_SCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + (n << 2) + SDO_BLOCK_SUBCOMMAND_END, crc)
                                         else:
@@ -1028,7 +1028,7 @@ class Node:
                                                 data_len -= 7
                                                 self._sdo_seqno += 1
                                             if hasattr(self._sdo_data, "seek"):
-                                                self._sdo_data.seek((1 - self._sdo_seqno) * 7, io.SEEK_CUR)
+                                                self._sdo_data.seek((1 - self._sdo_seqno) * 7 - min(0, data_len), io.SEEK_CUR)
                                             return
                                     else: # SDO_BLOCK_SUBCOMMAND_END
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
