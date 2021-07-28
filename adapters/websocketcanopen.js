@@ -1136,7 +1136,7 @@ class CanOpenObjectDictionary {
   static get INDEX_DATA_TYPE_UNICODE_STRING() { return 0x000B; }
   static get INDEX_DATA_TYPE_TIME_OF_DAY() { return 0x000C; }
   static get INDEX_DATA_TYPE_TIME_DIFFERENCE() { return 0x000D; }
-  static get INDEX_DATA_TYPE_DOMAIN() { return 0x000E; }
+  static get INDEX_DATA_TYPE_DOMAIN() { return 0x000F; }
   static get INDEX_DATA_TYPE_INTEGER24() { return 0x0010; }
   static get INDEX_DATA_TYPE_REAL64() { return 0x0011; }
   static get INDEX_DATA_TYPE_INTEGER40() { return 0x0012; }
