@@ -232,6 +232,7 @@ class Node:
         nmt_multiple_master_detect_time = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DETECT_TIME).value / 1000
         self._nmt_multiple_master_timer = IntervalTimer(nmt_multiple_master_detect_time, self._send, [NmtForceFlyingMasterRequest()])
         self._nmt_multiple_master_timer.start()
+        threading.Thread(target=self.on_active_nmt_master_won, daemon=True).start()
 
         mandatory_slaves = []
         reset_communication_slaves = []
@@ -308,6 +309,7 @@ class Node:
                 heartbeat_producer_time = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME).get(ODSI_VALUE).value
                 self._nmt_active_master_timer = threading.Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
                 self._nmt_active_master_timer.start()
+        threading.Thread(target=self.on_active_nmt_master_lost, daemon=True).start()
 
     def _nmt_boot_slave(self, slave_id):
         logger.debug("Boot NMT slave process for slave ID {}".format(slave_id))
@@ -1340,6 +1342,12 @@ class Node:
             if nmt_startup & 0x01:
                 return True
         return False
+
+    def on_active_nmt_master_lost(self):
+        pass
+
+    def on_active_nmt_master_won(self):
+        pass
 
     def on_sdo_download(self, odi, odsi, obj, sub_obj):
         pass
