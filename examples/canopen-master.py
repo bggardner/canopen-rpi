@@ -10,7 +10,7 @@ from sys import exit
 
 import socketcanopen
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEFAULT_CAN_INTERFACE = "vcan0"
