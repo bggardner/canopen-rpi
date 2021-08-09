@@ -120,6 +120,7 @@ class Node:
         self._nmt_active_master = False
         self._nmt_active_master_id = None
         self._nmt_active_master_timer = None
+        self._nmt_active_master_timer_lock = threading.Lock()
         self._nmt_flying_master_timer = None
         self._nmt_inhibit_time = 0
         self._nmt_multiple_master_timer = None
@@ -214,7 +215,7 @@ class Node:
         elif first_boot is True:
             logger.info("Active NMT master failure detected")
         if first_boot:
-            logger.debug("Active NMT master timeout after power-on")
+            logger.debug("Active NMT master timeout from power-on or failure, Reset Communication on all nodes")
             self._first_boot = False
             self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, 0))
             self._nmt_flying_master_startup()
@@ -300,12 +301,13 @@ class Node:
     def _nmt_become_inactive_master(self):
         logger.info("Device is not active NMT master, running in NMT slave mode")
         self._nmt_active_master = False
-        self._cancel_timer(self._nmt_active_master_timer)
-        if self._nmt_active_master_id not in self._heartbeat_consumer_timers: # See CiA 302-2 v4.1.0, section 5.5.2
-            logger.debug("Active NMT master not in heartbeat consumers; timeout will be twice heartbeat producer time")
-            heartbeat_producer_time = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME).get(ODSI_VALUE).value
-            self._nmt_active_master_timer = threading.Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
-            self._nmt_active_master_timer.start()
+        with self._nmt_active_master_timer_lock:
+            self._cancel_timer(self._nmt_active_master_timer)
+            if self._nmt_active_master_id not in self._heartbeat_consumer_timers: # See CiA 302-2 v4.1.0, section 5.5.2
+                logger.debug("Active NMT master not in heartbeat consumers; timeout will be twice heartbeat producer time")
+                heartbeat_producer_time = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME).get(ODSI_VALUE).value
+                self._nmt_active_master_timer = threading.Timer(heartbeat_producer_time * 2 / 1000, self._nmt_active_master_timeout, [True])
+                self._nmt_active_master_timer.start()
 
     def _nmt_boot_slave(self, slave_id):
         logger.debug("Boot NMT slave process for slave ID {}".format(slave_id))
@@ -432,11 +434,12 @@ class Node:
         flying_master_negotiation_delay = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_DELAY).value
         time.sleep(flying_master_negotiation_delay / 1000)
         logger.debug("Service active NMT master detection")
+        with self._nmt_active_master_timer_lock:
+            self._cancel_timer(self._nmt_active_master_timer)
+            active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value / 1000
+            self._nmt_active_master_timer = threading.Timer(active_nmt_master_timeout_time, self._nmt_active_master_timeout)
+            self._nmt_active_master_timer.start()
         self.send_nmt(NmtActiveMasterRequest())
-        self._cancel_timer(self._nmt_active_master_timer)
-        active_nmt_master_timeout_time = flying_master_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_TIMEOUT).value / 1000
-        self._nmt_active_master_timer = threading.Timer(active_nmt_master_timeout_time, self._nmt_active_master_timeout)
-        self._nmt_active_master_timer.start()
 
     def _nmt_startup(self):
         logger.debug("Entering NMT startup process")
@@ -534,14 +537,15 @@ class Node:
                         self.reset()
                     elif cs == NMT_NODE_CONTROL_RESET_COMMUNICATION:
                         self.reset_communication(msg.channel)
-            elif command == NMT_MASTER_NODE_ID: # Response from either an NmtActiveMasterRequest, NmtFlyingMasterRequest, or unsolicted from non-Flying Master after bootup was indicated
+            elif command == NMT_MASTER_NODE_ID: # Response from either an NmtActiveMasterRequest, NmtFlyingMasterRequest, or unsolicited from non-Flying Master after bootup was indicated
                 if self.is_nmt_master_capable:
                     logger.debug("Active NMT flying master detected with node-ID {}".format(data[1]))
                     compare_priority = False
                     self._nmt_active_master_id = data[1]
-                    if self._cancel_timer(self._nmt_active_master_timer): # If from NmtActiveMasterRequest
-                        self._first_boot = False
-                        compare_priority = True
+                    with self._nmt_active_master_timer_lock:
+                        if self._cancel_timer(self._nmt_active_master_timer): # If from NmtActiveMasterRequest
+                            self._first_boot = False
+                            compare_priority = True
                     if self._cancel_timer(self._nmt_flying_master_timer): # If from NmtFlyingMasterRequest
                         compare_priority = True
                     if self._cancel_timer(self._nmt_multiple_master_timer):
@@ -589,13 +593,14 @@ class Node:
             if producer_id in self._heartbeat_consumer_timers:
                 self._cancel_timer(self._heartbeat_consumer_timers.get(producer_id))
             elif self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
-                self._cancel_timer(self._nmt_active_master_timer)
-                heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
-                if heartbeat_producer_object is not None:
-                    heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
-                    if heartbeat_producer_value is not None and heartbeat_producer_value.value != 0:
-                        self._nmt_active_master_timer = threading.Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
-                        self._nmt_active_master_timer.start()
+                with self._nmt_active_master_timer_lock:
+                    self._cancel_timer(self._nmt_active_master_timer)
+                    heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
+                    if heartbeat_producer_object is not None:
+                        heartbeat_producer_value = heartbeat_producer_object.get(ODSI_VALUE)
+                        if heartbeat_producer_value is not None and heartbeat_producer_value.value != 0:
+                            self._nmt_active_master_timer = threading.Timer(heartbeat_producer_value.value * 1.5 / 1000, self._nmt_active_master_timeout, [True])
+                            self._nmt_active_master_timer.start()
 
             heartbeat_consumer_time = 0
             heartbeat_consumer_time_object = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
@@ -612,9 +617,10 @@ class Node:
                 heartbeat_consumer_timer.start()
                 self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
                 if self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
-                    self._cancel_timer(self._nmt_active_master_timer)
-                    self._nmt_active_master_timer = threading.Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
-                    self._nmt_active_master_timer.start()
+                    with self._nmt_active_master_timer_lock:
+                        self._cancel_timer(self._nmt_active_master_timer)
+                        self._nmt_active_master_timer = threading.Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
+                        self._nmt_active_master_timer.start()
             request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
             if request_nmt_obj is not None:
                 request_nmt_subobj = request_nmt_obj.get(producer_id)
@@ -624,7 +630,7 @@ class Node:
                     self.od.update({ODI_REQUEST_NMT: request_nmt_obj})
 
             if self.is_active_nmt_master and producer_nmt_state == NMT_STATE_INITIALISATION:
-                # Service NMT master node-ID
+                # Service NMT master node-ID, CiA 302-6, Section 4.6.3
                 nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
                 if nmt_flying_master_timing_params is not None:
                     priority = nmt_flying_master_timing_params.get(ODSI_NMT_FLYING_MASTER_TIMING_PARAMS_PRIORITY).value
@@ -1100,7 +1106,8 @@ class Node:
         self._cancel_timer(self._heartbeat_evaluation_reset_communication_timer)
         self._cancel_timer(self._heartbeat_producer_timer)
         self._cancel_timer(self._sync_timer)
-        self._cancel_timer(self._nmt_active_master_timer)
+        with self._nmt_active_master_timer_lock:
+            self._cancel_timer(self._nmt_active_master_timer)
         self._cancel_timer(self._nmt_flying_master_timer)
         self._cancel_timer(self._nmt_multiple_master_timer)
 
@@ -1348,7 +1355,7 @@ class Node:
         self.active_bus = self.default_bus
         self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
         if self.redundant_bus is not None:
-            self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
+            self.nmt_state = (NMT_STATE_INITIALISATION, self.redundant_bus.channel)
         self.od = self._default_od
         if ODI_REDUNDANCY_CONFIGURATION in self.od:
             logger.info("Node is configured for redundancy")
