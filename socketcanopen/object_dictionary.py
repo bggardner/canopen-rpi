@@ -722,7 +722,7 @@ class SubObject(ProtoObject):
             if self.data_type == ODI_DATA_TYPE_UNICODE_STRING:
                 return bytes(self.value, 'utf_16') # CANopen Unicode Strings are arrays of UNSIGNED16, assuming UTF-16
         if isinstance(self.value, datetime.datetime):
-            td = self.value - datetime.datetime(1984, 1, 1)
+            td = self.value - EPOCH
             return struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days)
         if isinstance(self.value, datetime.timedelta):
             return struct.pack("<IH", int(self.value.seconds * 1000 + self.value.microseconds / 1000) << 4, self.value.days)
@@ -765,7 +765,7 @@ class SubObject(ProtoObject):
             ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
             td = datetime.timedelta(days=d, milliseconds=ms)
-            return datetime.datetime(1980, 1, 1) + td
+            return EPOCH + td
         if self.data_type == ODI_DATA_TYPE_TIME_DIFFERENCE:
             ms, d = struct.unpack("<IH", bytes(b))
             ms = ms >> 4
