@@ -1056,6 +1056,7 @@ class CanOpenTimeOfDay extends CanOpenTimeDataType {
     let milliseconds = (date - this.EPOCH);
     let days = Math.floor(milliseconds / 1000 / 3600 / 24);
     milliseconds -= days * 24 * 3600 * 1000;
+    milliseconds += (this.EPOCH.getTimezoneOffset() - date.getTimezoneOffset()) * 60 * 1000;
     return new this(days, milliseconds);
   }
 
@@ -1067,6 +1068,7 @@ class CanOpenTimeOfDay extends CanOpenTimeDataType {
     let d = CanOpenTimeOfDay.EPOCH;
     d.setDate(d.getDate() + this.days);
     d.setMilliseconds(this.milliseconds);
+    d.setMinutes(d.getMinutes() + this.constructor.EPOCH.getTimezoneOffset() - d.getTimezoneOffset());
     return d;
   }
 }

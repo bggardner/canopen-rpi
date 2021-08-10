@@ -661,9 +661,8 @@ class Node:
                 time_obj = self.od.get(ODI_TIME_STAMP)
                 if time_obj is not None:
                     time_cob_id = time_obj.get(ODSI_VALUE).value
-                    if time_cob_id & 0x80 and time_cob_id & 0x1FFFF == can_id:
+                    if time_cob_id & 0x80 and time_cob_id & 0x1FFFFFFF == can_id:
                         ms, d = struct.unpack("<IH", data[0:6])
-                        ms = ms >> 4
                         self.timestamp = datetime.timedelta(days=d, milliseconds=ms)
             if (
                    (msg.channel == self.default_bus.channel and (self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL))
