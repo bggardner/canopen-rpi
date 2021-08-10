@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class IntervalTimer(threading.Thread):
     """Call a function every specified number of seconds:
 
-            t = IntervalTimer(30.0, f, args=None, kwargs=None)
+            t = IntervalTimer(30.0, function, args=None, kwargs=None)
             t.start()
             t.cancel()    # stop the timer's action if it's still running
     """
@@ -346,7 +346,7 @@ class Node:
                         logger.debug("Invalid response from slave ID {} for index 0x{:04X}".format(slave_id, index))
                         self._nmt_slave_booters[slave_id]["status"] = BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES[index]
                         return
-            # TODO: Route B, route_d can be set here
+            # TODO: Route B; Route D is started here
             # Begin Route C
             expected_cfg_date = 0
             expected_cfg_date_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_DATE)
@@ -664,9 +664,7 @@ class Node:
                     if time_cob_id & 0x80 and time_cob_id & 0x1FFFF == can_id:
                         ms, d = struct.unpack("<IH", data[0:6])
                         ms = ms >> 4
-                        td = datetime.timedelta(days=d, milliseconds=ms)
-                        ts = datetime.datetime(1980, 1, 1) + td
-                        self._timedelta = ts - datetime.datetime.now()
+                        self.timestamp = datetime.timedelta(days=d, milliseconds=ms)
             if (
                    (msg.channel == self.default_bus.channel and (self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL))
                    or
@@ -975,7 +973,9 @@ class Node:
                                             sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                             if sdo_server_scid is None:
                                                 raise ValueError("SDO Server SCID not specified")
-                                            msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                                            arbitration_id = sdo_server_scid.value & 0x1FFFFFFF
+                                            is_extended_id = bool(sdo_server_scid.value & 0x20000000)
+                                            msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                                             self._send(msg, msg.channel)
                                             data_len -= 7
                                             self._sdo_seqno += 1
@@ -1031,7 +1031,9 @@ class Node:
                                                 sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                                                 if sdo_server_scid is None:
                                                     raise ValueError("SDO Server SCID not specified")
-                                                msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                                                arbitration_id = sdo_server_scid.value & 0x1FFFFFFF
+                                                is_extended_id = bool(sdo_server_scid.value & 0x20000000)
+                                                msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                                                 self._send(msg, msg.channel)
                                                 data_len -= 7
                                                 self._sdo_seqno += 1
@@ -1066,7 +1068,9 @@ class Node:
                         sdo_server_scid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_SCID)
                         if sdo_server_scid is None:
                             raise ValueError("SDO Server SCID not specified")
-                        msg = can.Message(arbitration_id=sdo_server_scid.value & 0x1FFFFFFF, data=data, is_extended_id=False, channel=msg.channel)
+                        arbitration_id = sdo_server_scid.value & 0x1FFFFFFF
+                        is_extended_id = bool(sdo_server_scid.value & 0x20000000)
+                        msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                         self._send(msg, msg.channel)
                 for index in range(0x1280, 0x1300):
                     if index in self.od:
@@ -1236,7 +1240,9 @@ class Node:
                 if tpdo_cp is not None:
                     tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
                     if tpdo_cp_id is not None and tpdo_cp_id.value is not None:
-                        msg = can.Message(arbitration_id=tpdo_cp_id.value & 0x1FFF, data=data, is_extended_id=False)
+                        arbitration_id = tpdo_cp_id.value & 0x1FFFFFFF
+                        is_extended_id = bool(tpdo_cp_id.value & 0x20000000)
+                        msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id)
                         self._tpdo_triggers[i] = False
                         if ODSI_TPDO_COMM_PARAM_INHIBIT_TIME in tpdo_cp:
                             tpdo_inhibit_time = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_INHIBIT_TIME).value / 10000
@@ -1265,8 +1271,9 @@ class Node:
         if sync_object is not None:
             sync_value = sync_object.get(ODSI_VALUE)
             if sync_value is not None and sync_value.value is not None:
-                sync_id = sync_value.value & 0x1FFFF
-                msg = can.Message(arbitration_id=sync_id, is_extended_id=False)
+                arbitration_id = sync_value.value & 0x1FFFFFFF
+                is_extended_id = bool(sync_value.value & 0x20000000)
+                msg = can.Message(arbitration_id=arbitration_id, is_extended_id=is_extended_id)
                 if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
                     self._send(msg, self.default_bus.channel)
                 if self._redundant_nmt_state is not None and self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
@@ -1426,21 +1433,44 @@ class Node:
 
     def send_time(self, ts=None):
         if ts is None:
-            ts = datetime.datetime.now() + self._timedelta
-        if not isinstance(ts, datetime):
+            ts = self.timestamp
+        if not isinstance(ts, datetime.datetime):
             raise ValueError("Timestamp must be of type datetime")
+        if ts < EPOCH:
+            raise ValueError("Timestamp must be no earlier than {}".format(EPOCH))
         time_obj = self.od.get(ODI_TIME_STAMP)
         if time_obj is None:
             return False
-        time_cob_id = time_obj.get(ODSI_value).value
-        if time_cob_id & 0x40:
-            td = ts - datetime.datetime(1984, 1, 1)
-            msg = Message(time_cob_id & 0x1FFF, self.id, struct.pack("<IH", int(td.seconds * 1000 + td.microseconds / 1000) << 4, td.days))
+        time_cob_id = time_obj.get(ODSI_VALUE).value
+        if time_cob_id & 0x40000000:
+            td = ts - EPOCH
+            arbitration_id = time_cob_id & 0x1FFFFFFF
+            data = struct.pack("<IH", round(td.seconds * 1000 + td.microseconds / 1000), td.days)
+            is_extended_id = bool(time_cob_id & 0x20000000)
+            msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id)
             max_tx_delay = None
             if self._nmt_state == NMT_STATE_OPERATIONAL or self._nmt_state == NMT_STATE_PREOPERATIONAL:
-                self._send(msg, channel=self._default_bus.channel)
+                self._send(msg, channel=self.default_bus.channel)
             if self._redundant_nmt_state == NMT_STATE_OPERATIONAL or self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL:
-                self._send(msg, channel=self._redundant_bus.channel)
+                self._send(msg, channel=self.redundant_bus.channel)
+            logger.info("Sent TIME object with {}".format(ts))
+
+    @property
+    def timestamp(self):
+        return datetime.datetime.now(datetime.timezone.utc) + self._timedelta
+
+    @timestamp.setter
+    def timestamp(self, ts=None):
+        if ts is None:
+            self._timedelta = 0
+        elif isinstance(ts, datetime.datetime):
+            if ts < EPOCH:
+                raise ValueError("Timestamp must be no earlier than {}".format(EPOCH))
+            self._timedelta = ts - datetime.datetime.now(datetime.timezone.utc)
+        elif isinstance(ts, datetime.timedelta): # CANopen TIME_OF_DAY equivalent
+            if ts < 0:
+                raise ValueError("Timestamp timedelta must be non-negative")
+            self._timedelta = EPOCH + ts - datetime.datetime.now(datetime.timezone.utc)
 
     def trigger_tpdo(self, tpdo): # Event-driven TPDO
         tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
