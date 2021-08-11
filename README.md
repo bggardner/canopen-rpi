@@ -1,10 +1,6 @@
 About
 ==========
-
-Modules
--------
-
-This repository contains a Python module used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The first module, `socketcan`, abstracts the CAN interface by providing `Bus` and `Message` classes.  The `socketcan` module can be used to create adaptors to translate CAN traffic to other protocols.  The second module, `socketcanopen`, contains classes to instantiate a CANopen node application.  Each node must be initialized with at least one `can.BusABC`, a node ID (integer, 1 to 127), and an `socketcanopen.ObjectDictionary`.
+This repository contains a Python module used for instantiating CANopen nodes in Linux, especially for a Raspberry Pi.  The `socketcanopen` module contains classes to instantiate a CANopen node application.  This module now requires the [can](https://github.com/hardbyte/python-can) module, replacing the [original socketcan module](https://gist.github.com/bggardner/b2b9e8c11d1dd15e0bc886172f315fc6).  Each node must be initialized with at least one `can.BusABC` instance, a node-ID (integer, 1 to 127), and a `socketcanopen.ObjectDictionary` instance.
 
 Node Applications
 -------------------------
@@ -23,7 +19,7 @@ Protocol Adaptors
 
 Example protocol adaptors are provided: Note that these are very crude and do not provide buffering.
 * CANopen-to-HTTP (`canopen-http.py`, implementation of CiA 309-5)
-* CAN-to-WebSocket (`websocketcan-server.py`, uses SocketCAN message structure; `websocketcan.js` and `websocketcanopen.js` provide wrappers to JavaScript's WebSocket, which can be used to decode messages in client browser)
+* CAN-to-WebSocket (`websocketcan-server.py`, uses [SocketCAN](https://en.wikipedia.org/wiki/SocketCAN) message structure; `websocketcan.js` and `websocketcanopen.js` provide wrappers to JavaScript's WebSocket, which can be used to decode messages in client browser)
 
 Raspberry Pi Setup
 ==================
@@ -113,18 +109,30 @@ Installation
 1. `cd canopen-rpi`
 1. `pip3 install -e .`
 
-The simplest node is presented in the [canopen-node-sdo.py](/examples/canopen-node-sdo.py) file.
+Examples
+--------
+Many [examples](/examples/) are provided.  The simplest code is when using an EDS file:
+```
+#!/usr/bin/env python3
+import can
+import signal
+import socketcanopen
 
-Alternatively, `node.listen(True)` can be replaced with `node.process_msg(msg: socketcanopen.Message)` to manually send messages to the node, or `node.listen()` .  This is useful when there is a need to interface with the node's object dictionary (accessible from `node.od`) during operation, as `Node.listen(True)` is blocking and `Node.process_msg(msg: can.Message)` and `Node.listen()` are not. 
+can_bus = can.Bus("vcan0", bustype="socketcan")
+node_id = 0x02
+canopen_od = socketcanopen.ObjectDictionary.from_eds(os.path.dirname(os.path.abspath(__file__)) + '/node.eds', node_id)
+node = socketcanopen.Node(can_bus, node_idd, canopen_od)
+signal.pause() # Run forever
+```
 
 Example: Configure as CANopen Master with CAN-to-HTTP Adapter on Boot
 ---------------------------------------------------------------------
 
-8. Setup CANopen Master
+1. Setup CANopen Master
     1. Copy [canopen-master.py](/examples/canopen-master.py) to `/home/pi/`
     2. Copy [canopen-master.service](/unit-files/canopen-master.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
-8. Setup CAN-to-WebSocket Adapter
+1. Setup CAN-to-WebSocket Adapter
     1. Copy [websocketcan-server.py](/examples/websocketcan-server.py) to `/home/pi/`
     2. Copy [websocketcan-server.service](/unit-files/websocketcan-server.service) to `/etc/systemd/service/` and configure with `systemctl` like `can_if.service` above
 
