@@ -71,6 +71,7 @@ class Node:
 
     def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
         self.default_bus = bus
+        self._notifier = can.Notifier(self.default_bus, [])
 
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
@@ -120,7 +121,6 @@ class Node:
         self._heartbeat_evaluation_reset_communication_timer_lock = threading.Lock()
         self._heartbeat_producer_timer = None
         self._heartbeat_producer_timer_lock = threading.Lock()
-        self._listener = None
         self._message_timers = []
         self._message_timers_lock = threading.Lock()
         self._nmt_active_master = False
@@ -136,7 +136,6 @@ class Node:
         self._nmt_multiple_master_timer_lock = threading.Lock()
         self._nmt_slave_booters = {}
         self._pending_emcy_msgs = []
-        self._redundant_listener = None
         self._redundant_nmt_state = None
         self._sdo_cs = None
         self._sdo_data = None
@@ -158,8 +157,10 @@ class Node:
             if not isinstance(kwargs["redundant_bus"], can.BusABC):
                 raise TypeError
             self.redundant_bus = kwargs["redundant_bus"]
+            self._redundant_notifier = can.Notifier(self.redundant_bus, [])
         else:
             self.redundant_bus = None
+            self._redundant_notifer = None
 
         self.reset()
 
@@ -175,9 +176,7 @@ class Node:
         logger.info("Booting on {} with node-ID of {}".format(channel, self.id))
         self._send(BootupMessage(self.id), channel)
         self.nmt_state = (NMT_STATE_PREOPERATIONAL, channel)
-        self._listener = can.Notifier(self.default_bus, [self._process_msg])
-        if self.redundant_bus is not None:
-            self._redundant_listener = can.Notifier(self.redundant_bus, [self._process_msg])
+        self._start_listening(channel)
         self._process_heartbeat_producer()
         self._process_sync()
         if channel == self.active_bus.channel:
@@ -1312,6 +1311,24 @@ class Node:
                 if self._redundant_nmt_state is not None and self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
                     self._send(msg, self.redundant_bus.channel)
 
+    def _start_listening(self, channel):
+        if channel == self.default_bus.channel:
+            self._notifier.add_listener(self._process_msg)
+        else:
+            self._redundant_notifier.add_listener(self._process_msg)
+
+    def _stop_listening(self, channel=None):
+        if channel is None or channel == self.default_bus.channel:
+            try:
+                self._notifier.remove_listener(self._process_msg)
+            except ValueError:
+                pass
+        if channel is None or channel == self.redundant_bus.channel:
+            try:
+                self._redundant_notifier.remove_listener(self._process_msg)
+            except ValueError:
+                pass
+
     @property
     def active_bus(self):
         return self._active_bus
@@ -1400,6 +1417,7 @@ class Node:
 
     def reset(self):
         logger.info("Device reset")
+        self._stop_listening()
         self.active_bus = self.default_bus
         self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
         if self.redundant_bus is not None:
@@ -1423,6 +1441,7 @@ class Node:
         if channel is None:
             channel = self.active_bus.channel
         logger.info("Device reset communication on {}".format(channel))
+        self._stop_listening(channel)
         self.nmt_state = (NMT_STATE_INITIALISATION, channel)
         self._reset_timers()
         if self._err_indicator is not None:
