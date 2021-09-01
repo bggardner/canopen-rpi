@@ -59,6 +59,18 @@ class SdoTimeout(Exception):
     pass
 
 
+class Listener(can.Listener):
+    def __init__(self, msg_handler, err_handler, channel):
+        self.msg_handler = msg_handler
+        self.err_handler = err_handler
+
+    def on_message_received(self, msg: can.Message):
+        self.msg_handler(msg)
+
+    def on_error(self, exc: Exception):
+        self.err_handler(self.channel)
+
+
 class Node:
     BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES = {
         0x1F85: "D",
@@ -72,6 +84,7 @@ class Node:
     def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
         self.default_bus = bus
         self._notifier = can.Notifier(self.default_bus, [])
+        self._listener = Listener(self._process_msg, self._on_can_error, self.default_bus.channel)
 
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
@@ -158,9 +171,11 @@ class Node:
                 raise TypeError
             self.redundant_bus = kwargs["redundant_bus"]
             self._redundant_notifier = can.Notifier(self.redundant_bus, [])
+            self._redundant_listener = Listener(self._process_msg, self._on_can_error, self.redundant_bus.channel)
         else:
             self.redundant_bus = None
             self._redundant_notifer = None
+            self._redundant_listener = None
 
         self.reset()
 
@@ -475,6 +490,17 @@ class Node:
                 logger.debug("Entering NMT slave mode")
         else:
             logger.debug("Entering NMT slave mode")
+
+    def _on_can_error(self, channel):
+        error_behavior_obj = self.od.get(ODI_ERROR_BEHAVIOR)
+        if error_behavior_obj is not None:
+            comm_error_behavior = error_behavior_obj.get(0x01).value
+            if comm_error_behavior == 0:
+                if ((channel == self.default_bus.channel and self._nmt_state == NMT_STATE_OPERATIONAL) or
+                    (channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)):
+                    self.nmt_state = (NMT_STATE_PREOPERATIONAL, bus)
+            elif comm_error_behavior == 2:
+                self.nmt_state = (NMT_STATE_STOPPED, bus)
 
     def _on_sdo_download(self, odi, odsi, obj, sub_obj):
         obj.update({odsi: sub_obj})
@@ -1172,7 +1198,8 @@ class Node:
             max_tx_delay = redundancy_cfg.get(0x01).value / 1000
         try:
             bus.send(msg, max_tx_delay)
-        except can.CanError:
+        except can.CanError as e:
+            self._on_can_error(bus.channel)
             if bus == self.default_bus and max_tx_delay is not None: # CiA 302-6, Section 7.1.2.2(d)
                 err_threshold = redundancy_cfg.get(0x04)
                 err_counter = redundancy_cfg.get(0x05)
@@ -1313,19 +1340,19 @@ class Node:
 
     def _start_listening(self, channel):
         if channel == self.default_bus.channel:
-            self._notifier.add_listener(self._process_msg)
+            self._notifier.add_listener(self._listener)
         else:
-            self._redundant_notifier.add_listener(self._process_msg)
+            self._redundant_notifier.add_listener(self._redundant_listener)
 
     def _stop_listening(self, channel=None):
         if channel is None or channel == self.default_bus.channel:
             try:
-                self._notifier.remove_listener(self._process_msg)
+                self._notifier.remove_listener(self._listener)
             except ValueError:
                 pass
         if channel is None or channel == self.redundant_bus.channel:
             try:
-                self._redundant_notifier.remove_listener(self._process_msg)
+                self._redundant_notifier.remove_listener(self._redundant_listener)
             except ValueError:
                 pass
 
