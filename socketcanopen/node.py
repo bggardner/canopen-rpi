@@ -4,6 +4,7 @@
 # TODO: NMT error handler (CiA302-2)
 from binascii import crc_hqx
 import can
+import copy
 import datetime
 import io
 import logging
@@ -1449,7 +1450,7 @@ class Node:
         self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
         if self.redundant_bus is not None:
             self.nmt_state = (NMT_STATE_INITIALISATION, self.redundant_bus.channel)
-        self.od = self._default_od
+        self.od = copy.deepcopy(self._default_od)
         if ODI_REDUNDANCY_CONFIGURATION in self.od:
             logger.info("Node is configured for redundancy")
             redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
@@ -1478,7 +1479,7 @@ class Node:
                 self._err_indicator_timer.start()
         for odi, obj in self._default_od.items():
             if odi >= 0x1000 and odi <= 0x1FFF:
-                self.od.update({odi: obj})
+                self.od.update({odi: copy.deepcopy(obj)})
         if ODI_REDUNDANCY_CONFIGURATION in self.od and channel == self.active_bus.channel:
             logger.info("Node is configured for redundancy")
             redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)

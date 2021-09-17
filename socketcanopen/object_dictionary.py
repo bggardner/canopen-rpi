@@ -1,5 +1,6 @@
 from collections import Mapping, MutableMapping
 from configparser import ConfigParser
+import copy
 import datetime
 from enum import Enum, IntEnum, unique
 import struct
@@ -527,13 +528,25 @@ class ProtoObject(MutableMapping):
             self.high_limit = None
         self._lock = Lock()
 
-    def __getitem__(self, sub_index):
-        with self._lock:
-            return self._store[sub_index]
+    def __deepcopy__(self, memo={}):
+        return type(self)(
+            parameter_name=self.parameter_name,
+            object_type=self.object_type,
+            data_type=self.data_type,
+            access_type=self.access_type,
+            default_value=self.default_value,
+            pdo_mapping=self.pdo_mapping,
+            low_limit=self.low_limit,
+            high_limit=self.high_limit
+        )
 
     def __delitem__(self, sub_index):
         with self._lock:
             del self._store[sub_index]
+
+    def __getitem__(self, sub_index):
+        with self._lock:
+            return self._store[sub_index]
 
     def __iter__(self):
         return iter(self._store)
@@ -853,6 +866,24 @@ class Object(ProtoObject):
             if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
                 raise TypeError
             self._store.update(kwargs["subs"])
+
+    def __deepcopy__(self, memo={}):
+        subs = copy.deepcopy(self._store)
+        subs.pop(0xFF)
+        o = type(self)(
+            parameter_name=self.parameter_name,
+            object_type=self.object_type,
+            data_type=self.data_type,
+            access_type=self.access_type,
+            default_value=self.default_value,
+            pdo_mapping=self.pdo_mapping,
+            low_limit=self.low_limit,
+            high_limit=self.high_limit,
+            sub_number=self.sub_number,
+            obj_flags=self.obj_flags,
+            subs=subs
+        )
+        return o
 
     def __setitem__(self, sub_index, sub_object: SubObject):
         if sub_index == "value":
