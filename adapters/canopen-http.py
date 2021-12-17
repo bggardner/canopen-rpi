@@ -241,9 +241,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
                     if node == 'all':
                         node_id = 0
-                    elif node_id == 'default':
+                    elif node == 'default':
                         node_id = default_node_id
-                    elif node_id == 'none':
+                    elif node == 'none':
                         node_id = None
                     else:
                         node_id = node
