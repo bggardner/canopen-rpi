@@ -161,6 +161,7 @@ class Node:
         self._sdo_seqno = 0
         self._sdo_t = None
         self._sync_counter = 0
+        self._sync_producer_counter = 1
         self._sync_timer = None
         self._sync_timer_lock = threading.Lock()
         self._timedelta = datetime.timedelta()
@@ -1333,11 +1334,22 @@ class Node:
             if sync_value is not None and sync_value.value is not None:
                 arbitration_id = sync_value.value & 0x1FFFFFFF
                 is_extended_id = bool(sync_value.value & 0x20000000)
-                msg = can.Message(arbitration_id=arbitration_id, is_extended_id=is_extended_id)
+                sync_overflow_object = self.od.get(ODI_SYNCHRONOUS_COUNTER_OVERFLOW_VALUE)
+                data = []
+                if sync_overflow_object is not None:
+                    sync_overflow = sync_overflow_object.get(ODSI_VALUE)
+                    if sync_overflow is not None and sync_overflow.value > 1 and sync_overflow.value < 241:
+                        if self._sync_producer_counter >= sync_overflow.value:
+                            self._sync_producer_counter = 1
+                        else:
+                            self._sync_producer_counter += 1
+                        data = [self._sync_producer_counter]
+                msg = can.Message(arbitration_id=arbitration_id, is_extended_id=is_extended_id, data=data)
                 if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
                     self._send(msg, self.default_bus.channel)
                 if self._redundant_nmt_state is not None and self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
                     self._send(msg, self.redundant_bus.channel)
+                self._on_sync()
 
     def _start_listening(self, channel):
         if channel == self.default_bus.channel:
