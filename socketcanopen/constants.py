@@ -125,8 +125,12 @@ ODSI_IDENTITY_PRODUCT = 0x02
 ODSI_IDENTITY_REVISION = 0x03
 ODSI_IDENTITY_SERIAL = 0x04
 ODI_SYNCHRONOUS_COUNTER_OVERFLOW_VALUE = 0x1019
+ODI_VERIFY_CONFIGURATION = 0x1020
+ODSI_VERIFY_CONFIGURATION_DATE = 0x01
+ODSI_VERIFY_CONFIGURATION_TIME = 0x02
 ODI_STORE_EDS = 0x1021
 ODI_STORE_FORMAT = 0x1022
+ODI_EMERGENCY_CONSUMER_OBJECT = 0x1028
 ODI_ERROR_BEHAVIOR = 0x1029
 ODI_NMT_INHIBIT_TIME = 0x102A
 ODI_SDO_SERVER = 0x1200
@@ -212,6 +216,7 @@ SDO_SCS_BLOCK_DOWNLOAD = 5
 SDO_SCS_BLOCK_UPLOAD = 6
 SDO_CS_ABORT = 4
 SDO_ABORT_TOGGLE = 0x05030000
+SDO_ABORT_TIMEOUT = 0x05040000
 SDO_ABORT_INVALID_CS = 0x05040001
 SDO_ABORT_INVALID_BLKSIZE = 0x05040002
 SDO_ABORT_INVALID_SEQNO = 0x05040003
@@ -222,6 +227,7 @@ SDO_ABORT_OBJECT_DNE = 0x06020000
 SDO_ABORT_PARAMETER_LENGTH = 0x06070010
 SDO_ABORT_SUBINDEX_DNE = 0x06090011
 SOD_ABORT_INVALID_VALUE = 0x06090030
+SDO_ABORT_CONNECTION = 0x060A0023
 SDO_ABORT_GENERAL = 0x08000000
 SDO_ABORT_NO_DATA = 0x08000024
 SDO_BLOCK_SUBCOMMAND_INITIATE = 0
@@ -232,3 +238,22 @@ SDO_BLOCK_SUBCOMMAND_START = 3
 # PDO
 TPDO_COMM_PARAM_ID_VALID_BITNUM = 31
 TPDO_COMM_PARAM_ID_RTR_BITNUM = 30
+
+# NMT
+NMT_ERROR_STATUS = {
+    "A": "The CANopen device is not listed in object 1F81h.",
+    "B": "No response received for upload request of object 1000h.",
+    "C": "Value of object 1000h from CANopen device is different to value in object 1F84h (Device type).",
+    "D": "Value of object 1018h sub-index 01h from CANopen device is different to value in object 1F85h (Vendor-ID).",
+    "E": "Heartbeat event. No heartbeat message received from CANopen device",
+    "F": "Node guarding event. No confirmation for guarding request received from CANopen device.",
+    "G": "Objects for program download are not configured or inconsistent.",
+    "H": "Software update is required, but not allowed because of configuration or current status.",
+    "I": "Software update is required, but program download failed.",
+    "J": "Configuration download failed.",
+    "K": "Heartbeat event during start error control service. No heartbeat message received from CANopen device during start error control service.",
+    "L": "NMT slave was initially operational. (CANopen manager may resume operation with other CANopen devices)",
+    "M": "Value of object 1018h sub-index 02h from CANopen device is different to value in object 1F86h (Product code).",
+    "N": "Value of object 1018h sub-index 03h from CANopen device is different to value in object 1F87h (Revision number).",
+    "O": "Value of object 1018h sub-index 04h from CANopen device is different to value in object 1F88h (Serial number)."
+}

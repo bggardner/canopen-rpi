@@ -427,7 +427,7 @@ class ObjectDictionary(MutableMapping):
                 subs = {}
                 si = 0
                 while len(subs) <= sub_number and si <= 0xFF:
-                    key = "{:4X}sub{:d}".format(i, si)
+                    key = "{:4X}sub{:X}".format(i, si)
                     if key in eds:
                         sub = SubObject.from_config(eds[key], node_id)
                         subs.update({si: sub})
@@ -436,6 +436,14 @@ class ObjectDictionary(MutableMapping):
             # TODO: Assign proper data type to subs if Object.object_type in [ObjectType.DEFSTRUCT, ObjectType.ARRAY, ObjectType.RECORD]
             o = Object.from_config(oc, node_id, subs)
             od.update({i: o})
+        store_eds_object = od.get(ODI_STORE_EDS)
+        if store_eds_object is not None:
+            store_eds_value = store_eds_object.get(ODSI_VALUE)
+            if store_eds_value is not None:
+                store_eds_value.default_value = open(filename, "rb")
+                store_eds_value.value = store_eds_value.default_value
+                store_eds_object.update({ODSI_VALUE: store_eds_value})
+                od.update({ODI_STORE_EDS: store_eds_object})
         return od
 
 
@@ -489,7 +497,7 @@ class ProtoObject(MutableMapping):
             else:
                 self.data_type = None
         elif kwargs["data_type"] is None:
-                self.data_type = None
+            self.data_type = None
         else:
             self.data_type = DataType(kwargs["data_type"])
         if "access_type" not in kwargs:
@@ -527,18 +535,6 @@ class ProtoObject(MutableMapping):
         else:
             self.high_limit = None
         self._lock = Lock()
-
-    def __deepcopy__(self, memo={}):
-        return type(self)(
-            parameter_name=self.parameter_name,
-            object_type=self.object_type,
-            data_type=self.data_type,
-            access_type=self.access_type,
-            default_value=self.default_value,
-            pdo_mapping=self.pdo_mapping,
-            low_limit=self.low_limit,
-            high_limit=self.high_limit
-        )
 
     def __delitem__(self, sub_index):
         with self._lock:
@@ -841,12 +837,16 @@ class Object(ProtoObject):
         else:
             self.obj_flags = 0
 
-        self._store = {ODSI_STRUCTURE: SubObject(
-            parameter_name="structure",
-            data_type=ODI_DATA_TYPE_UNSIGNED32,
-            access_type=AccessType.CONST,
-            default_value=(self.data_type << OD_STRUCTURE_DATA_TYPE_BITNUM) + self.object_type
-        )}
+        self._store = {}
+
+        if self.data_type is not None:
+            self._store.update({ODSI_STRUCTURE: SubObject(
+                parameter_name="structure",
+                data_type=ODI_DATA_TYPE_UNSIGNED32,
+                access_type=AccessType.CONST,
+                default_value=(self.data_type << OD_STRUCTURE_DATA_TYPE_BITNUM) + self.object_type
+            )})
+
         if self.sub_number is None:
             self._store.update({
                 ODSI_VALUE: SubObject(
@@ -866,24 +866,6 @@ class Object(ProtoObject):
             if not all(isinstance(v, SubObject) for v in kwargs["subs"].values()):
                 raise TypeError
             self._store.update(kwargs["subs"])
-
-    def __deepcopy__(self, memo={}):
-        subs = copy.deepcopy(self._store)
-        subs.pop(0xFF)
-        o = type(self)(
-            parameter_name=self.parameter_name,
-            object_type=self.object_type,
-            data_type=self.data_type,
-            access_type=self.access_type,
-            default_value=self.default_value,
-            pdo_mapping=self.pdo_mapping,
-            low_limit=self.low_limit,
-            high_limit=self.high_limit,
-            sub_number=self.sub_number,
-            obj_flags=self.obj_flags,
-            subs=subs
-        )
-        return o
 
     def __setitem__(self, sub_index, sub_object: SubObject):
         if sub_index == "value":

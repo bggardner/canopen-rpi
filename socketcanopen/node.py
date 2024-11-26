@@ -49,21 +49,49 @@ class IntervalTimer(threading.Thread):
             next_run += self.interval
 
 
+class NmtSlaveBootError(Exception):
+
+    def __init__(self, status):
+        self.status = status
+
+
 class SdoAbort(Exception):
+
     def __init__(self, index, subindex, code):
         self.index = index
         self.subindex = subindex
         self.code = code
 
 
-class SdoTimeout(Exception):
-    pass
+class SdoRequestEvent(threading.Event):
+
+    def __init__(self, index, subindex):
+        super().__init__()
+        self.index = index
+        self.subindex = subindex
+        self._response = None
+
+    def respond(self, data):
+        self._response = data
+        self.set()
+
+    @property
+    def response(self):
+        return self._response
+
+
+class SdoTimeout(SdoAbort):
+
+    def __init__(self, index, subindex):
+        super().__init__(index, subindex, SDO_ABORT_TIMEOUT)
 
 
 class Listener(can.Listener):
+
     def __init__(self, msg_handler, err_handler, channel):
         self.msg_handler = msg_handler
         self.err_handler = err_handler
+        self.channel = channel
 
     def on_message_received(self, msg: can.Message):
         self.msg_handler(msg)
@@ -73,13 +101,8 @@ class Listener(can.Listener):
 
 
 class Node:
-    BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES = {
-        0x1F85: "D",
-        0x1F86: "M",
-        0x1F87: "N",
-        0x1F88: "O"
-    }
-    SDO_TIMEOUT = 0.3
+
+    SDO_TIMEOUT = 5 #0.3
     SDO_ROUND_TRIP_TIME = 222e-6
 
     def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
@@ -90,7 +113,7 @@ class Node:
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
         self.id = id
-        self._default_od = od
+        self.od = od
 
         if "err_indicator" in kwargs:
             if not isinstance(kwargs["err_indicator"], ErrorIndicator):
@@ -143,12 +166,14 @@ class Node:
         self._nmt_active_master_timer_lock = threading.Lock()
         self._nmt_boot_timer = None
         self._nmt_boot_timer_lock = threading.Lock()
+        self._nmt_boot_time_expired = True
         self._nmt_flying_master_timer = None
         self._nmt_flying_master_timer_lock = threading.Lock()
         self._nmt_inhibit_time = 0
         self._nmt_multiple_master_timer = None
         self._nmt_multiple_master_timer_lock = threading.Lock()
         self._nmt_slave_booters = {}
+        self._nmt_slave_states = {}
         self._pending_emcy_msgs = []
         self._redundant_nmt_state = None
         self._sdo_cs = None
@@ -185,12 +210,13 @@ class Node:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
         self._reset_timers()
 
     def _boot(self, channel=None):
         if channel is None:
             channel = self.active_bus.channel
-        logger.info("Booting on {} with node-ID of {}".format(channel, self.id))
+        logger.info(f"Booting on {channel} with node-ID of {self.id}")
         self._send(BootupMessage(self.id), channel)
         self.nmt_state = (NMT_STATE_PREOPERATIONAL, channel)
         self._start_listening(channel)
@@ -207,7 +233,8 @@ class Node:
         return False
 
     def _heartbeat_consumer_timeout(self, id):
-        self._heartbeat_evaluation_counters[id] = 0 # For detecting heartbeat event
+        logger.warning(f"Heartbeat consumer timeout for node-ID {id}")
+        self._heartbeat_evaluation_counters[id] = 0 # For start service error control during NMT slave boot
         self.emcy(EMCY_HEARTBEAT_BY_NODE + id)
         request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
         if request_nmt_obj is not None:
@@ -219,6 +246,7 @@ class Node:
     def _heartbeat_evaluation_power_on_timeout(self):
         logger.info("Heartbeat evaluation timer (power-on) expired")
         if len(self._heartbeat_evaluation_counters.values()) == 0 or max(self._heartbeat_evaluation_counters.values()) < 3: # CiA 302-6, Figure 7, event (4)
+            logger.warning(f"Heartbeat evaluation counter length = {len(self._heartbeat_evaluation_counters.values())}, max = {max(self._heartbeat_evaluation_counters.values()) if len(self._heartbeat_evaluation_counters.values()) > 0 else 'None'}")
             self.active_bus = self.redundant_bus
         # else: CiA 302-6, Figure 7, event (1)
         self._heartbeat_evaluation_counters = {}
@@ -251,6 +279,7 @@ class Node:
 
     def _nmt_become_active_master(self):
         logger.info("Device is active NMT master")
+        self._nmt_boot_time_expired = False
         self._nmt_active_master = True
         # See CiA 302-2 v4.1.0, section 5.5.3
         nmt_flying_master_timing_params = self.od.get(ODI_NMT_FLYING_MASTER_TIMING_PARAMETERS)
@@ -261,30 +290,35 @@ class Node:
             self._nmt_multiple_master_timer.start()
         threading.Thread(target=self.on_active_nmt_master_won, daemon=True).start()
 
+        # CiA 302-2 section 3.1
+        all_slaves = []
         mandatory_slaves = []
         reset_communication_slaves = []
-        slaves_obj = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT)
-        if slaves_obj is not None:
-            slaves_obj_length = slaves_obj.get(ODSI_VALUE).value
-            for slave_id in range(1, slaves_obj_length + 1):
-                slave = slaves_obj.get(slave_id).value
-                if (slave & 0x09) == 0x09:
-                    mandatory_slaves += [slave_id]
-                if (slave & 0x10) == 0:
-                    reset_communication_slaves += [slave_id]
-        if slaves_obj is None or len(reset_communication_slaves) == slaves_obj_length:
-            logger.debug("No keep alive nodes, reset communication to all")
+        slave_assignment_obj = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT)
+        keep_alive_slave_count = 0
+        if slave_assignment_obj is not None:
+            slave_assignment_obj_length = slave_assignment_obj.get(ODSI_VALUE).value
+            for slave_id in range(1, slave_assignment_obj_length + 1):
+                slave_assignment = slave_assignment_obj.get(slave_id).value
+                if slave_assignment & 0x01: # Bit 0: NMT Slave
+                    all_slaves.append(slave_id)
+                    if slave_assignment & 0x08: # Bit 3: Mandatory
+                        mandatory_slaves.append(slave_id)
+                    if slave_assignment & 0x10: # Bit 4: Reset Communication
+                        keep_alive_slave_count += 1
+                    else:
+                        reset_communication_slaves.append(slave_id)
+        if slave_assignment_obj is None or keep_alive_slave_count == 0:
+            logger.info("No keep alive nodes, reset communication to all")
             self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, 0))
         else:
             for slave_id in reset_communication_slaves:
-                logger.debug("Resetting communication for slave with node-ID {}".format(slave_id))
+                logger.info(f"Resetting communication for slave with node-ID {slave_id}")
                 self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, slave_id))
 
-        #Start process boot NMT slave
+        # Start process boot NMT slave
         for slave_id in self._nmt_slave_booters:
             self._nmt_slave_booters[slave_id]["thread"].join() # Prefer to kill thread instead of wait for join
-        all_nodes_not_booted = len(mandatory_slaves)
-        self._nmt_boot_time_expired = False
         boot_time_obj = self.od.get(ODI_BOOT_TIME)
         if boot_time_obj is not None:
             boot_time = boot_time_obj.get(ODSI_VALUE).value / 1000
@@ -294,28 +328,32 @@ class Node:
                     self._nmt_boot_timer = threading.Timer(boot_time, self._nmt_boot_timeout)
                     self._nmt_boot_timer.start()
         self._nmt_slave_booters = {}
-        for slave_id in mandatory_slaves:
-            self._nmt_slave_booters[slave_id] = {"thread": threading.Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None}
+        for slave_id in all_slaves:
+            logger.info(f"Booting NMT slave with node-ID {slave_id}...")
+            self._nmt_slave_booters[slave_id] = {"thread": threading.Thread(target=self._nmt_boot_slave, args=(slave_id,), daemon=True), "status": None, "read": False}
             self._nmt_slave_booters[slave_id]["thread"].start()
         mandatory_slaves_booted = 0
         while (len(mandatory_slaves) > mandatory_slaves_booted) and not self._nmt_boot_time_expired:
             mandatory_slaves_booted = 0
-            # Hack until self._nmt_boot_slave() is fully implemented
-            #for slave_id, booter in self._nmt_slave_booters:
-            #    if booter["status"] == "OK":
-            #        mandatory_slaves_booted += 1
-            request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
-            if request_nmt_obj is not None:
-                for slave_id in mandatory_slaves:
-                    slave_nmt_state = request_nmt_obj.get(slave_id)
-                    if slave_nmt_state is not None and slave_nmt_state.value > 0x01:
+            for slave_id in mandatory_slaves:
+                booter = self._nmt_slave_booters.get(slave_id)
+                if booter.get("status") is not None and not booter.get("read"):
+                    booter["read"] = True
+                    if booter.get("status") == "OK":
                         mandatory_slaves_booted += 1
-            time.sleep(0.25)
+                        logger.info(f"Boot NMT slave succeeded for node-ID {slave_id}")
+                    else:
+                        logger.error(f"Boot NMT slave error for node-ID {slave_id} with code {booter.get('status')}")
+            time.sleep(1)
         if self._nmt_boot_time_expired:
             logger.warning("NMT boot time expired before all mandatory slaves booted, halting NMT boot")
+            self.on_error("nmt_boot_timeout", self._nmt_slave_booters)
             return
-        logger.info("All mandatory slaves booted ({})".format(mandatory_slaves_booted))
-        #End process boot NMT slave
+        with self._nmt_boot_timer_lock:
+            self._cancel_timer(self._nmt_boot_timer)
+        self._nmt_boot_time_expired = True
+        logger.info(f"All mandatory slaves booted ({mandatory_slaves_booted})")
+        # End process boot NMT slave
 
         nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
         if (nmt_startup & 0x04) == 0:
@@ -323,11 +361,11 @@ class Node:
             self.nmt_state = NMT_STATE_OPERATIONAL
         if (nmt_startup & 0x08) == 0:
             if nmt_startup & 0x02:
-                logger.debug("Starting all NMT slaves")
+                logger.info("Starting all NMT slaves")
                 self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
             elif slaves_obj is not None:
                 for slave_id in range(1, slaves_obj_length + 1):
-                    logger.debug("Starting slave ID {}".format(slave_id))
+                    logger.info(f"Starting NMT slave with node-ID {slave_id}")
                     self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
 
     def _nmt_become_inactive_master(self):
@@ -343,85 +381,158 @@ class Node:
         threading.Thread(target=self.on_active_nmt_master_lost, daemon=True).start()
 
     def _nmt_boot_slave(self, slave_id):
-        logger.debug("Boot NMT slave process for slave ID {}".format(slave_id))
         nmt_slave_assignment = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT).get(slave_id).value
-        if (nmt_slave_assignment & 0x01) == 0: # Is NMT slave node-ID still in network list?
-            logger.debug("Slave ID {} is not longer in the network list".format(slave_id))
-            self._nmt_slave_booters[slave_id]["status"] = "A"
-            return
-        route_d = False
-        route_e = True
-        if nmt_slave_assignment & 0x02: # Boot NMT slave?
-            route_e = False
-            slave_device_type = self._sdo_upload_request(slave_id, 0x1000, 0x00)
-            if slave_device_type is None:
-                logger.debug("Invalid response for device type from slave ID {}".format(slave_id))
-                self._nmt_slave_booters[slave_id]["status"] = "B"
-                return
-            slave_device_type = int.from_bytes(slave_device_type[4:8])
-            logger.debug("Received SDO response from slave ID {} with device type of 0x{:04X}".format(slave_id, device_type))
-            device_type_id_obj = self.od.get(ODI_DEVICE_TYPE_IDENTIFICATION)
-            if device_type_id_obj is not None:
-                device_type_id_subobj = device_type_id_obj.get(slave_id)
-                if device_type_id_subobj is not None and device_type_id_subobj.value != 0 and device_type_id_subobj.value != slave_device_type:
-                    logger.debug("Device type mismatch for slave ID {}".format(slave_id))
-                    self._nmt_slave_booters[slave_id]["status"] = "C"
-                    return
-            for index in range(0x1F85, 0x1F89):
-                obj = self.od.get(index)
-                if obj is None: continue
-                subobj = obj.get(slave_id)
-                if subobj is not None and subobj.value != 0:
-                    response = self._sdo_upload_request(slave_id, 0x1018, index - 0x1F84)
-                    if response is None:
-                        logger.debug("Invalid response from slave ID {} for index 0x{:04X}".format(slave_id, index))
-                        self._nmt_slave_booters[slave_id]["status"] = BOOT_NMT_SLAVE_IDENTITY_ERROR_CODES[index]
-                        return
-            # TODO: Route B; Route D is started here
-            # Begin Route C
-            expected_cfg_date = 0
-            expected_cfg_date_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_DATE)
-            if expected_cfg_date_obj is not None:
-                expected_cfg_date = expected_cfg_date_obj.get(slave_id).value
-            expected_cfg_time = 0
-            expected_cfg_time_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_TIME)
-            if expected_cfg_time_obj is not None:
-                expected_cfg_time = expected_cfg_time_obj.get(slave_id).value
-            update_configuration = True
-            if expected_cfg_date != 0 and expected_cfg_time != 0:
-                cfg_date = self._sdo_upload_request(slave_id, 0x1020, 0x01)
-                cfg_time = self._sdo_upload_request(slave_id, 0x1020, 0x02)
-                if cfg_date is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_date and cfg_time is not None and int.from_bytes(cfg_date[4:8]) == expected_cfg_time:
-                    update_configuration = False
-            if update_configuration:
-                pass  # TODO: Update configuration per CiA 302-3
-        # Enter Routes D/E
-        consumer_heartbeat_time_obj = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
-        if consumer_heartbeat_time_obj is not None:
-            for subindex in range(1, consumer_heartbeat_time_obj.get(ODSI_VALUE).value + 1):
-                consumer_heartbeat_time = consumer_heartbeat_time_obj.get(subindex).value
-                if (consumer_heartbeat_time >> 16) & 0x7F == slave_id:
-                    if (consumer_heartbeat_time & 0xFFFF) > 0:
-                        if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
-                            break # Heartbeat indication received
-                        time.sleep((consumer_heartbeat_time & 0xFFFF) / 1000) # Check again after waiting
-                        if slave_id in self._heartbeat_consumer_timers and self._heartbeat_consumer_timers.get(slave_id).is_alive():
-                            break # Heartbeat indication received
-                        self._nmt_slave_booters[slave_id]["status"] = "K"
+        logger.debug(f"Entering boot NMT slave process for node-ID {slave_id} with assignment 0x{nmt_slave_assignment:08X}")
+        try:
+            if (nmt_slave_assignment & 0x01) == 0: # Is NMT slave node-ID still in network list?
+                raise NmtSlaveBootError(slave_id, "A")
+            route_d = False
+            route_e = True
+            if nmt_slave_assignment & 0x03: # Boot NMT slave?
+                route_e = False
+                logger.info(f"Requesting device type during NMT slave boot for node-ID {slave_id}")
+                while True:
+                    try:
+                        slave_device_type = self._sdo_upload_request(slave_id, ODI_DEVICE_TYPE, ODSI_VALUE)
+                        break
+                    except SdoAbort as e:
+                        self._nmt_slave_booters[slave_id]["status"] = "B"
+                        if nmt_slave_assignment & 0x08 and self._nmt_boot_time_expired: # Mandatory and boot time expired?
+                            raise NmtSlaveBootError("B")
+                        logger.error(f"Failed to get device type during NMT slave boot for node-ID {slave_id}, retrying...")
+                        time.sleep(1)
+                slave_device_type = int.from_bytes(slave_device_type, byteorder="little")
+                logger.info(f"Received SDO response from slave ID {slave_id} with device type of 0x{slave_device_type:08X}")
+                device_type_id_obj = self.od.get(ODI_DEVICE_TYPE_IDENTIFICATION)
+                if device_type_id_obj is not None:
+                    device_type_id_subobj = device_type_id_obj.get(slave_id)
+                    if device_type_id_subobj is not None and device_type_id_subobj.value != 0 and device_type_id_subobj.value != slave_device_type:
+                        raise NmtSlaveBootError("C")
+                for index, error_status in {
+                    ODI_VENDOR_IDENTIFICATION: "D",
+                    ODI_PRODUCT_CODE: "M",
+                    ODI_REVISION_NUMBER: "N",
+                    ODI_SERIAL_NUMBER: "O"
+                }.items():
+                    obj = self.od.get(index)
+                    if obj is None:
+                        continue
+                    subobj = obj.get(slave_id)
+                    if subobj is not None and subobj.value != 0:
+                        try:
+                            response = self._sdo_upload_request(slave_id, ODI_IDENTITY, index - ODI_DEVICE_TYPE_IDENTIFICATION)
+                        except:
+                            raise NmtSlaveBootError(error_status)
+
+                # Begin Route B
+                if nmt_slave_assignment & 0x10: # Keep-alive?
+                    # Check NMT state per CiA 302-6 section 3.6
+                    heartbeat_consumer_time = 0
+                    heartbeat_consumer_time_obj = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
+                    if heartbeat_consumer_time_obj is not None:
+                        for subindex in range(1, heartbeat_consumer_time_obj.get(ODSI_VALUE).value + 1):
+                            heartbeat_consumer_time_value = heartbeat_consumer_time_obj.get(subindex).value
+                            if (heartbeat_consumer_time_value >> 16) & 0x7F == slave_id:
+                                heartbeat_consumer_time = heartbeat_consumer_time_value & 0xFFFF
+                                break
+                    if heartbeat_consumer_time > 0:
+                        del self._nmt_slave_states[slave_id]
+                        with self._heartbeat_consumer_timers_lock:
+                            self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                            # Set timer to be longer than timeout (arbitrarily choosing 1 second)
+                            self._heartbeat_consumer_timers[slave_id] = threading.Timer(heartbeat_consumer_time + 1, lambda: None)
+                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                        self._heartbeat_consumer_timers[slave_id].join(heartbeat_consumer_time & 0xFFFF) # Wait for timeout
+                        heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
+                        self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                        if heartbeat_event:
+                            raise NmtSlaveBootError("E")
                     else:
-                        pass # Node guarding not supported
-                    break
-        if route_d:
-            self._nmt_slave_booters[slave_id]["status"] = "L"
-            return
-        if not route_e:
-            nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
-            if nmt_startup_obj is not None:
-                nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
-                if (nmt_startup & 0x80) == 0: # The NMT master shall start the NMT slaves
-                    if (nmt_startup & 0x02) == 0 or self.nmt_state == NMT_STATE_OPERATIONAL:
-                        self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
-        self._nmt_slave_booters[slave_id]["status"] = "OK"
+                        node_guard_request = NmtErrorControlMessage(slave_id, [])
+                        node_guard_request.is_remote_frame = True
+                        self._send(node_guard_request)
+                        with self._heartbeat_consumer_timers_lock:
+                            self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                            self._heartbeat_consumer_timers[slave_id] = threading.Timer(0.1, lambda: None)
+                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                        heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
+                        self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                        if heartbeat_event:
+                            raise NmtSlaveBootError("F")
+                    if self._nmt_slave_states.get(slave_id) == NMT_STATE_OPERATIONAL:
+                        route_d = True
+                    else:
+                        self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, slave_id))
+                if not route_d:
+                    if nmt_slave_assignment & 0x20: # Software version check?
+                        pass
+
+                    # Begin Route C
+                    expected_cfg_date = 0
+                    expected_cfg_date_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_DATE)
+                    if expected_cfg_date_obj is not None:
+                        expected_cfg_date = expected_cfg_date_obj.get(slave_id).value
+                    expected_cfg_time = 0
+                    expected_cfg_time_obj = self.od.get(ODI_EXPECTED_CONFIGURATION_TIME)
+                    if expected_cfg_time_obj is not None:
+                        expected_cfg_time = expected_cfg_time_obj.get(slave_id).value
+                    update_configuration = True
+                    if expected_cfg_date != 0 and expected_cfg_time != 0:
+                        try:
+                            cfg_date = int.from_bytes(self._sdo_upload_request(slave_id, ODI_VERIFY_CONFIGURATION, ODSI_VERIFY_CONFIGURATION_DATE), byteorder="little")
+                            cfg_time = int.from_bytes(self._sdo_upload_request(slave_id, ODI_VERIFY_CONFIGURATION, ODSI_VERIFY_CONFIGURATION_TIME), byteorder="little")
+                            if cfg_date == expected_cfg_date and cfg_time == expected_cfg_time:
+                                update_configuration = False
+                        except:
+                            pass
+                    if update_configuration:
+                        try:
+                            self.update_configuration(slave_id)
+                        except:
+                            raise NmtSlaveBootError("J")
+
+            # Enter Routes D/E
+            # Start error control service per CiA 302-6 section 4.1
+            heartbeat_consumer_time = 0
+            heartbeat_consumer_time_obj = self.od.get(ODI_HEARTBEAT_CONSUMER_TIME)
+            if heartbeat_consumer_time_obj is not None:
+                for subindex in range(1, heartbeat_consumer_time_obj.get(ODSI_VALUE).value + 1):
+                    heartbeat_consumer_time_value = heartbeat_consumer_time_obj.get(subindex).value
+                    if (heartbeat_consumer_time_value >> 16) & 0x7F == slave_id:
+                        heartbeat_consumer_time = heartbeat_consumer_time_value & 0xFFFF
+                        break
+            if heartbeat_consumer_time > 0:
+                with self._heartbeat_consumer_timers_lock:
+                    self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                    # Set timer to be longer than timeout (arbitrarily choosing 1 second)
+                    self._heartbeat_consumer_timers[slave_id] = threading.Timer(heartbeat_consumer_time + 1, lambda: None)
+                    self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                self._heartbeat_consumer_timers.get(slave_id).join(heartbeat_consumer_time) # Wait for timeout
+                heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
+                self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
+                if heartbeat_event:
+                    raise NmtSlaveBootError("K")
+                else:
+                    # Heartbeat was received, so restart timer
+                    with self._heartbeat_consumer_timers_lock:
+                        self._heartbeat_consumer_timers[slave_id] = threading.Timer((heartbeat_consumer_time & 0xFFFF), self._heartbeat_consumer_timeout, args=[slave_id])
+                        self._heartbeat_consumer_timers.get(slave_id).start()
+            else:
+                if not (nmt_slave_assignment & 0x01) and (nmt_slave_assignment >> 16) > 0:
+                    raise NotImplementedError("Node guarding is not supported")
+            if route_d:
+                raise NmtSlaveBootError("L")
+            if not route_e:
+                nmt_startup_obj = self.od.get(ODI_NMT_STARTUP)
+                if nmt_startup_obj is not None:
+                    nmt_startup = nmt_startup_obj.get(ODSI_VALUE).value
+                    if (nmt_startup & 0x80) == 0: # The NMT master shall start the NMT slaves
+                        if (nmt_startup & 0x02) == 0 or self.nmt_state == NMT_STATE_OPERATIONAL:
+                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
+            self._nmt_slave_booters[slave_id]["status"] = "OK"
+        except NmtSlaveBootError as e:
+            self._nmt_slave_booters[slave_id]["status"] = e.status
+            self.on_error("nmt_boot_error", [slave_id, e.status])
 
     def _nmt_boot_timeout(self):
         self._nmt_boot_time_expired = True
@@ -487,11 +598,11 @@ class Node:
                     self._nmt_become_active_master()
             else:
                 if (nmt_startup & 0x04) == 0:
-                    logger.debug("Self-starting")
+                    logger.info("Self-starting")
                     self.nmt_state = NMT_STATE_OPERATIONAL
-                logger.debug("Entering NMT slave mode")
+                logger.info("Entering NMT slave mode")
         else:
-            logger.debug("Entering NMT slave mode")
+            logger.info("Entering NMT slave mode")
 
     def _on_can_error(self, channel):
         error_behavior_obj = self.od.get(ODI_ERROR_BEHAVIOR)
@@ -500,9 +611,9 @@ class Node:
             if comm_error_behavior == 0:
                 if ((channel == self.default_bus.channel and self._nmt_state == NMT_STATE_OPERATIONAL) or
                     (channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)):
-                    self.nmt_state = (NMT_STATE_PREOPERATIONAL, bus)
+                    self.nmt_state = (NMT_STATE_PREOPERATIONAL, channel)
             elif comm_error_behavior == 2:
-                self.nmt_state = (NMT_STATE_STOPPED, bus)
+                self.nmt_state = (NMT_STATE_STOPPED, channel)
 
     def _on_sdo_download(self, odi, odsi, obj, sub_obj):
         obj.update({odsi: sub_obj})
@@ -564,7 +675,7 @@ class Node:
                         if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
                             tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
                             if tpdo_cp_type == 0xFC:
-                                self._tpdo_triggers[0] = True; # Defer until SYNC event
+                                self._tpdo_triggers[tpdo - 1] = True; # Defer until SYNC event
                             elif tpdo_cp_type == 0xFD:
                                 self._send_pdo(tpdo)
         elif fc == FUNCTION_CODE_NMT:
@@ -585,7 +696,7 @@ class Node:
                         self.reset_communication(msg.channel)
             elif command == NMT_MASTER_NODE_ID: # Response from either an NmtActiveMasterRequest, NmtFlyingMasterRequest, or unsolicited from non-Flying Master after bootup was indicated
                 if self.is_nmt_master_capable:
-                    logger.debug("Active NMT flying master detected with node-ID {}".format(data[1]))
+                    logger.debug(f"Active NMT flying master detected with node-ID {data[1]}")
                     compare_priority = False
                     self._nmt_active_master_id = data[1]
                     with self._nmt_active_master_timer_lock:
@@ -637,11 +748,14 @@ class Node:
                     self._heartbeat_evaluation_counters[producer_id] += 1
                 else:
                     self._heartbeat_evaluation_counters[producer_id] = 1
+                logger.debug(f"Heartbeat evaluated for node-ID {producer_id} with count of {self._heartbeat_evaluation_counters[producer_id]}")
 
             if producer_id in self._heartbeat_consumer_timers:
                 with self._heartbeat_consumer_timers_lock:
                     self._cancel_timer(self._heartbeat_consumer_timers.get(producer_id))
             elif self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
+                # CiA 302-2, section 5.5.2 Detection of an NMT master failure
+                # If not in heartbeat consumers, timeout is not defined; use 1.5 of own heartbeat period
                 with self._nmt_active_master_timer_lock:
                     self._cancel_timer(self._nmt_active_master_timer)
                     heartbeat_producer_object = self.od.get(ODI_HEARTBEAT_PRODUCER_TIME)
@@ -661,17 +775,25 @@ class Node:
                         if heartbeat_consumer_time_value is not None and heartbeat_consumer_time_value.value is not None and ((heartbeat_consumer_time_value.value >> 16) & 0x7F) == producer_id:
                             heartbeat_consumer_time = (heartbeat_consumer_time_value.value & 0xFFFF) / 1000
                             break
-            if heartbeat_consumer_time != 0:
-                with self._heartbeat_consumer_timers_lock:
-                    self._cancel_timer(self._heartbeat_consumer_timers.get(producer_id))
-                    heartbeat_consumer_timer = threading.Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
-                    heartbeat_consumer_timer.start()
-                    self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
-                if self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
-                    with self._nmt_active_master_timer_lock:
-                        self._cancel_timer(self._nmt_active_master_timer)
-                        self._nmt_active_master_timer = threading.Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
-                        self._nmt_active_master_timer.start()
+
+            # If active NMT master, initially start heartbeat consumer timers in _nmt_become_active_master(), otherwise start here:
+            if (self.is_active_nmt_master and self._nmt_boot_time_expired) or not self.is_nmt_master_capable:
+                if heartbeat_consumer_time != 0:
+                    with self._heartbeat_consumer_timers_lock:
+                        #self._cancel_timer(self._heartbeat_consumer_timers.get(producer_id)) # Already cancelled above
+                        heartbeat_consumer_timer = threading.Timer(heartbeat_consumer_time, self._heartbeat_consumer_timeout, [producer_id])
+                        heartbeat_consumer_timer.start()
+                        self._heartbeat_consumer_timers.update({producer_id: heartbeat_consumer_timer})
+                    if self.is_nmt_master_capable and (producer_id == self._nmt_active_master_id):
+                        with self._nmt_active_master_timer_lock:
+                            self._cancel_timer(self._nmt_active_master_timer)
+                            self._nmt_active_master_timer = threading.Timer(heartbeat_consumer_time, self._nmt_active_master_timeout)
+                            self._nmt_active_master_timer.start()
+
+            # Need to save NMT state for NMT slave keep-alive checking
+            if self.is_active_nmt_master and self._nmt_boot_time_expired:
+                 self._nmt_slave_states.update({producer_id: producer_nmt_state})
+
             request_nmt_obj = self.od.get(ODI_REQUEST_NMT)
             if request_nmt_obj is not None:
                 request_nmt_subobj = request_nmt_obj.get(producer_id)
@@ -689,15 +811,17 @@ class Node:
                     priority = 0
                 self.send_nmt(NmtMasterNodeIdMessage(priority, self.id))
 
-                # Bootup handler
-                nmt_slave_assignments = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT)
-                if nmt_slave_assignments is not None:
-                    nmt_slave_assignment = nmt_slave_assignments.get(producer_id)
-                    if nmt_slave_assignment is not None:
-                        if nmt_slave_assignment.value & 0x01:
-                            self._nmt_boot_slave(producer_id) # TODO: Inform application
-                        else:
-                            pass # TODO: Inform application
+                if self._nmt_boot_time_expired:
+                    # Bootup handler per CiA 302-2 section 4.3
+                    in_network = False
+                    nmt_slave_assignments = self.od.get(ODI_NMT_SLAVE_ASSIGNMENT)
+                    if nmt_slave_assignments is not None:
+                        nmt_slave_assignment = nmt_slave_assignments.get(producer_id)
+                        if nmt_slave_assignment is not None:
+                            if nmt_slave_assignment.value & 0x01:
+                                in_network = True
+                                threading.Thread(target=self._nmt_boot_slave, daemon=True, args=[producer_id]).start()
+                    self.on_node_bootup(producer_id, in_network)
 
         else: # Check non-restricted CAN-IDs
             if self.nmt_state == NMT_STATE_OPERATIONAL and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.4.2.3
@@ -706,17 +830,31 @@ class Node:
                     sync_obj_value = sync_obj.get(ODSI_VALUE)
                     if sync_obj_value is not None and (sync_obj_value.value & 0x1FFFFFFF) == can_id:
                         self._on_sync()
-            if (self.nmt_state == NMT_STATE_PREOPERATIONAL or self.nmt_state == NMT_STATE_OPERATIONAL) and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
-                time_obj = self.od.get(ODI_TIME_STAMP)
-                if time_obj is not None:
-                    time_cob_id = time_obj.get(ODSI_VALUE).value
-                    if time_cob_id & 0x80 and time_cob_id & 0x1FFFFFFF == can_id:
-                        ms, d = struct.unpack("<IH", data[0:6])
-                        self.timestamp = EPOCH + datetime.timedelta(days=d, milliseconds=ms)
+            if self._nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL]:
+                emcy_consumer_object= self.od.get(ODI_EMERGENCY_CONSUMER_OBJECT)
+                if emcy_consumer_object is not None:
+                    subobjs = 0
+                    for subindex, subobj in emcy_consumer_object.items():
+                        if subindex == 0:
+                            subobjs = subobj.value
+                            continue
+                        if subindex > subobjs:
+                            break
+                        if subobj.value == can_id:
+                            eec, er = struct.unpack("<HB", data[0:3])
+                            msef = int.from_bytes(data[3:], byteorder="little")
+                            self.on_emcy(can_id, eec, er, msef)
+                if msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
+                    time_obj = self.od.get(ODI_TIME_STAMP)
+                    if time_obj is not None:
+                        time_cob_id = time_obj.get(ODSI_VALUE).value
+                        if time_cob_id & 0x80 and time_cob_id & 0x1FFFFFFF == can_id:
+                            ms, d = struct.unpack("<IH", data[0:6])
+                            self.timestamp = EPOCH + datetime.timedelta(days=d, milliseconds=ms)
             if (
-                   (msg.channel == self.default_bus.channel and (self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL))
+                   (msg.channel == self.default_bus.channel and self._nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL])
                    or
-                   (self.redundant_bus is not None and msg.channel == self.redundant_bus.channel and (self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL))
+                   (self.redundant_bus is not None and msg.channel == self.redundant_bus.channel and self._redundant_nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL])
                ) and len(data) == 8: # Ignore SDO if data is not 8 bytes
                 sdo_server_object = self.od.get(ODI_SDO_SERVER)
                 if sdo_server_object is not None:
@@ -725,7 +863,7 @@ class Node:
                         try:
                             ccs = (data[0] & SDO_CS_MASK) >> SDO_CS_BITNUM
                             if self._sdo_cs == SDO_SCS_BLOCK_DOWNLOAD and self._sdo_seqno > 0:
-                                logger.info("SDO block download sub-block for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                logger.info(f"SDO block download sub-block for mux 0x{self._sdo_odi:02X}{solf_sdo_osdi:04X}")
                                 c = data[0] >> 7
                                 seqno = data[0] & 0x7F
                                 if self._sdo_seqno != seqno:
@@ -758,7 +896,7 @@ class Node:
                                     else:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_OBJECT_DNE)
                                 if ccs == SDO_CS_ABORT:
-                                    logger.info("SDO abort request for mux 0x{:02X}{:04X}".format(odi, odsi))
+                                    logger.info(f"SDO abort request for mux 0x{odi:04X}{odsi:02X}")
                                     self._sdo_cs = None
                                     self._sdo_data = None
                                     self._sdo_len = None
@@ -768,7 +906,7 @@ class Node:
                                     self._sdo_t = None
                                     return
                                 elif ccs == SDO_CCS_DOWNLOAD_INITIATE:
-                                    logger.info("SDO download initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
+                                    logger.info(f"SDO download initiate request for mux 0x{odi:04X}{odsi:02X}")
                                     if subobj.access_type in [AccessType.RO, AccessType.CONST]:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_RO)
                                     scs = SDO_SCS_DOWNLOAD_INITIATE
@@ -824,7 +962,7 @@ class Node:
                                     if self._sdo_data is None:
                                         logger.error("SDO Download Segment Request aborted, initate not received or aborted")
                                         raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
-                                    logger.info("SDO download segment request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                    logger.info(f"SDO download segment request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                     scs = SDO_SCS_DOWNLOAD_SEGMENT
                                     t = (data[0] >> SDO_T_BITNUM) & 1
                                     if self._sdo_t != t:
@@ -846,7 +984,7 @@ class Node:
                                         self._sdo_t = None
                                     data = struct.pack("<B7x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM))
                                 elif ccs == SDO_CCS_UPLOAD_INITIATE:
-                                    logger.info("SDO upload initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
+                                    logger.info(f"SDO upload initiate request for mux 0x{odi:04X}{odsi:02X}")
                                     if subobj.access_type == AccessType.WO:
                                         raise SdoAbort(odi, odsi, SDO_ABORT_WO)
                                     if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
@@ -889,7 +1027,7 @@ class Node:
                                     if self._sdo_data is None:
                                         logger.error("SDO upload initiate request aborted, initiate not received or aborted")
                                         raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS) # Initiate not receieved or aborted
-                                    logger.info("SDO upload segment request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                    logger.info(f"SDO upload segment request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                     scs = SDO_SCS_UPLOAD_SEGMENT
                                     t = (data[0] >> SDO_T_BITNUM) & 1
                                     if self._sdo_t != t:
@@ -912,12 +1050,12 @@ class Node:
                                         self._sdo_len = None
                                         self._sdo_t = None
                                         c = 1
-                                    data = struct.pack("<B{}s{}x".format(len(sdo_data), 7 - len(sdo_data)), (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
+                                    data = struct.pack(f"<B{len(sdo_data)}s{7 - len(sdo_data)}x", (scs << SDO_CS_BITNUM) + (t << SDO_T_BITNUM) + (n << SDO_SEGMENT_N_BITNUM) + (c << SDO_C_BITNUM), sdo_data)
                                 elif ccs == SDO_CCS_BLOCK_DOWNLOAD:
                                     scs = SDO_SCS_BLOCK_DOWNLOAD
                                     cs = data[0] & 0x01
                                     if cs == SDO_BLOCK_SUBCOMMAND_INITIATE:
-                                        logger.info("SDO block download initiate request for mux 0x{:02X}{:04X}".format(odi, odsi))
+                                        logger.info(f"SDO block download initiate request for mux 0x{odi:04X}{odsi:02X}")
                                         if subobj.access_type in [AccessType.RO, AccessType.CONST]:
                                             raise SdoAbort(odi, odsi, SDO_ABORT_RO)
                                         if odsi != ODSI_VALUE and obj.get(ODSI_VALUE).value < odsi:
@@ -946,7 +1084,7 @@ class Node:
                                     else: # SDO_BLOCK_SUBCOMMAND_END
                                         if self._sdo_cs != SDO_SCS_BLOCK_DOWNLOAD:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS)
-                                        logger.info("SDO block download end request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        logger.info(f"SDO block download end request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         n = (data[0] >> 2) & 0x07
                                         self._sdo_data = self._sdo_data[0:-n]
                                         if self._sdo_t: # Check CRC
@@ -996,12 +1134,12 @@ class Node:
                                         self._sdo_len = blksize
                                         self._sdo_odi = odi
                                         self._sdo_odsi = odsi
-                                        logger.info("SDO block upload initiate request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        logger.info(f"SDO block upload initiate request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         data = struct.pack("<BHBI", (scs << SDO_CS_BITNUM) + (sc << 2) + (s << 1) + SDO_BLOCK_SUBCOMMAND_INITIATE, self._sdo_odi, self._sdo_odsi, size)
                                     elif cs == SDO_BLOCK_SUBCOMMAND_START:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
-                                        logger.info("SDO block upload start request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        logger.info(f"SDO block upload start request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         self._sdo_seqno = 1
                                         if hasattr(self._sdo_data, "fileno"):
                                             data_len = os.fstat(self._sdo_data.fileno()).st_size
@@ -1033,7 +1171,7 @@ class Node:
                                     elif cs == SDO_BLOCK_SUBCOMMAND_RESPONSE:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
-                                        logger.info("SDO block upload response for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        logger.info(f"SDO block upload response for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         ackseq = data[1]
                                         blksize = data[2]
                                         if ackseq != 0:
@@ -1060,7 +1198,7 @@ class Node:
                                             data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
                                         else:
                                             data_len = len(self._sdo_data)
-                                        logger.info("{} bytes remaining in SDO block upload".format(data_len))
+                                        logger.info(f"{data_len} bytes remaining in SDO block upload")
                                         if data_len <= 0:
                                             crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
                                             data = struct.pack("<BH5x", (SDO_SCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + (n << 2) + SDO_BLOCK_SUBCOMMAND_END, crc)
@@ -1090,9 +1228,9 @@ class Node:
                                             return
                                     else: # SDO_BLOCK_SUBCOMMAND_END
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
-                                            logger.error("SDO Request aborted, invalid cs: {:d}".format(ccs))
+                                            logger.error(f"SDO Request aborted, invalid cs: {ccs:d}")
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
-                                        logger.info("SDO block upload end request for mux 0x{:02X}{:04X}".format(self._sdo_odi, self._sdo_odsi))
+                                        logger.info(f"SDO block upload end request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         self._sdo_cs = None
                                         self._sdo_data = None
                                         self._sdo_len = None
@@ -1104,7 +1242,7 @@ class Node:
                                 else:
                                     raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS)
                         except SdoAbort as a:
-                            logger.error("SDO aborted for mux 0x{:04X}{:02X} with error code 0x{:08X}".format(a.index, a.subindex, a.code))
+                            logger.error(f"SDO aborted for mux 0x{a.index:04X}{a.subindex:02X} with error code 0x{a.code:08X}")
                             self._sdo_seqno = 0
                             self._sdo_data = None
                             self._sdo_len = None
@@ -1120,12 +1258,30 @@ class Node:
                         is_extended_id = bool(sdo_server_scid.value & 0x20000000)
                         msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                         self._send(msg, msg.channel)
-                for index in range(0x1280, 0x1300):
+
+                # Store responses to SDO requests
+                # Start with pre-defiined connection set
+                if (can_id >> FUNCTION_CODE_BITNUM) == FUNCTION_CODE_SDO_TX:
+                    sdo_client_rx_can_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + (can_id & 0x7F)
+                else:
+                    sdo_client_rx_can_id = None
+                # Check for client COB-IDs
+                for index in range(ODI_SDO_CLIENT, ODI_SDO_CLIENT + 0x80):
                     if index in self.od:
+                        sdo_client_parameters = True
+                        sdo_client_tx_cob_id = self.od.get(index).get(ODSI_SDO_CLIENT_TX).value
                         sdo_client_rx_cob_id = self.od.get(index).get(ODSI_SDO_CLIENT_RX).value
-                        sdo_server_can_id = sdo_client_rx_cob_id & 0x1FFFFFFF
-                        if ((sdo_client_rx_cob_id & 0x8000) == 0) and can_id == sdo_server_can_id and sdo_server_can_id in self._sdo_requests:
-                            self._sdo_requests[sdo_server_can_id] = data
+                        if (sdo_client_rx_cob_id & 0x8000) == 0 and (sdo_client_rx_cob_id & 0x8000) == 0 and can_id == (sdo_client_tx_cob_id & 0x1FFFFFFF):
+                            sdo_client_rx_can_id = sdo_client_rx_cob_id & 0x1FFFFFFF
+                            break
+                if sdo_client_rx_can_id is not None:
+                    sdo_request = self._sdo_requests.get(sdo_client_rx_can_id)
+                    if sdo_request is not None:
+                        sdo_request.respond(msg.data)
+                    else:
+                        logger.warning(f"SDO message discarded with CAN ID {can_id:03X}, no match for {sdo_client_rx_can_id:03X}")
+
+            threading.Thread(target=self.on_message, args=(msg,), daemon=True).start()
 
     def _process_sync(self):
         sync_object = self.od.get(ODI_SYNC)
@@ -1137,13 +1293,13 @@ class Node:
                 is_sync_producer = False
         else:
             is_sync_producer = False
+        sync_time = 0
         sync_time_object = self.od.get(ODI_SYNC_TIME)
         if sync_time_object is not None:
             sync_time_value = sync_time_object.get(ODSI_VALUE)
             if sync_time_value is not None and sync_time_value.value is not None:
                 sync_time = sync_time_value.value / 1000000
-        else:
-            sync_time = 0
+        logger.info(f"Node is now {'' if is_sync_producer else 'not '}the SYNC producer with a cycle time of {sync_time} seconds")
         with self._sync_timer_lock:
             self._cancel_timer(self._sync_timer)
             if is_sync_producer and sync_time != 0:
@@ -1157,7 +1313,6 @@ class Node:
         with self._heartbeat_consumer_timers_lock:
             for i, t in self._heartbeat_consumer_timers.items():
                 self._cancel_timer(t)
-            self._heartbeat_consumer_timers = {}
         with self._err_indicator_timer_lock:
             self._cancel_timer(self._err_indicator_timer)
         with self._heartbeat_evaluation_reset_communication_timer_lock:
@@ -1173,19 +1328,51 @@ class Node:
         with self._nmt_multiple_master_timer_lock:
             self._cancel_timer(self._nmt_multiple_master_timer)
 
+    def _sdo_request(self, request):
+        index, subindex = struct.unpack("<HB", request.sdo_data[0:3])
+        # Check for client COB-IDs
+        for odi in range(ODI_SDO_CLIENT, ODI_SDO_CLIENT + 0x80):
+            if odi in self.od:
+                sdo_client_obj = self.od.get(odi)
+                if request.node_id == sdo_client_obj.get(ODSI_SDO_CLIENT_NODE_ID).value:
+                    sdo_client_tx_cob_id = sdo_client_obj.get(ODSI_SDO_CLIENT_TX).value
+                    sdo_client_rx_cob_id = sdo_client_obj.get(ODSI_SDO_CLIENT_RX).value
+                    if sdo_client_tx_cob_id & 0x80000000 and sdo_client_rx_cob_id & 0x80000000:
+                        raise SdoAbort(index, subindex, SDO_ABORT_CONNECTION) # SDO is not valid
+                    request.arbitration_id = sdo_client_rx_cob_id & 0x1FFFFFFF
+                    break
+        if self._sdo_requests.get(request.arbitration_id) is not None:
+            self._send(SdoAbortResponse(request.arbitration_id, index, subindex, SDO_ABORT_GENERAL))
+        self._sdo_requests[request.arbitration_id] = SdoRequestEvent(index, subindex)
+        logger.info(f"Sending SDO request with CAN ID {request.arbitration_id:03X}")
+        self._send(request)
+        response = None
+        try:
+            self._sdo_requests[request.arbitration_id].wait(self.SDO_TIMEOUT)
+            response = self._sdo_requests[request.arbitration_id].response
+            del self._sdo_requests[request.arbitration_id]
+        except KeyError:
+            pass
+        if response is None:
+            logger.error(f"SDO timeout for CAN ID {request.arbitration_id:03X}")
+            raise SdoTimeout(index, subindex)
+        logger.info(f"Received SDO response for CAN ID {request.arbitration_id:03X}")
+        if (response[0] >> SDO_CS_BITNUM) == SDO_CS_ABORT:
+            raise SdoAbort(index, subindex, int.from_bytes(response[4:8], byteorder="little"))
+        return response
+
+    def _sdo_download_request(self, node_id, index, subindex, sdo_data):
+        sdo_data = sdo_data.ljust(4, b'\x00')
+        response = self._sdo_request(SdoDownloadInitiateRequest(node_id, 0, 1, 0, index, subindex, sdo_data))
+        if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_DOWNLOAD_INITIATE:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        return response[4:8]
+
     def _sdo_upload_request(self, node_id, index, subindex):
-        sdo_server_rx_can_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + node_id
-        if self._sdo_requests[sdo_server_rx_can_id] is not None:
-            self._send(SdoAbortResponse(node_id, 0x0000, 0x00, SDO_ABORT_GENERAL))
-        self._sdo_requests[sdo_server_rx_can_id] = None
-        self._send(SdoUploadInitiateRequest(node_id, 0x1000, 0x00))
-        for i in range(math.ceil(SDO_TIMEOUT / SDO_ROUND_TRIP_TIME)):
-            if self._sdo_requests[sdo_server_rx_can_id] is not None:
-                break
-            time.sleep(SDO_MESSAGE_TIME)
-        if self._sdo_requests[sdo_server_rx_can_id] is None or (self._sdo_requests[sdo_server_rx_can_id][0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
-            return
-        return self._sdo_requests[sdo_server_rx_can_id]
+        response = self._sdo_request(SdoUploadInitiateRequest(node_id, index, subindex))
+        if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        return response[4:8]
 
     def _send(self, msg: can.Message, channel=None):
         if channel is None:
@@ -1238,6 +1425,7 @@ class Node:
             return
         if er_value.value is None:
             return
+        self.on_emcy(emcy_id_value, eec, er_value, msef)
         msg = EmcyMessage(emcy_id_value.value, eec, er_value.value, msef)
         if self._nmt_state == NMT_STATE_STOPPED and self._redundant_nmt_state == NMT_STATE_STOPPED:
             self._pending_emcy_msgs.append(msg)
@@ -1262,9 +1450,9 @@ class Node:
                             self._message_timers.append(t)
                     return
         if self._nmt_state == NMT_STATE_PREOPERATIONAL or self._nmt_state == NMT_STATE_OPERATIONAL:
-            self._send(msg, channel=self.default_bus.channel, timeout=max_tx_delay)
+            self._send(msg, channel=self.default_bus.channel)
         if self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL or self._redundant_nmt_state == NMT_STATE_OPERATIONAL:
-            self._send(msg, channel=self.redundant_bus.channel, timeout=max_tx_delay)
+            self._send(msg, channel=self.redundant_bus.channel)
 
     def _send_heartbeat(self):
         msg = HeartbeatMessage(self.id, self.nmt_state)
@@ -1308,7 +1496,7 @@ class Node:
                             if i not in self._tpdo_inibit_time:
                                 self._tpdo_inhibit_times[i] = 0
                             if self._tpdo_inhibit_times[i] + tpdo_inhibit_time < time.time():
-                                logger.info("TPDO{} inhibit time violation, delaying message".format(i))
+                                logger.info(f"TPDO{i} inhibit time violation, delaying message")
                                 self._tpdo_inhibit_times[i] += tpdo_inhibit_time
                                 # CiA 302-6, 4.1.2.2(a)
                                 if self._nmt_state == NMT_STATE_OPERATIONAL:
@@ -1356,16 +1544,19 @@ class Node:
             self._notifier.add_listener(self._listener)
         else:
             self._redundant_notifier.add_listener(self._redundant_listener)
+        logger.debug(f"Listening on {'all channels' if channel is None else channel}")
 
     def _stop_listening(self, channel=None):
         if channel is None or channel == self.default_bus.channel:
             try:
                 self._notifier.remove_listener(self._listener)
+                logger.debug(f"Stopped listening on {self.default_bus.channel}")
             except ValueError:
                 pass
         if channel is None or channel == self.redundant_bus.channel:
             try:
                 self._redundant_notifier.remove_listener(self._redundant_listener)
+                logger.debug(f"Stopped listening on {self.redundant_bus.channel}")
             except ValueError:
                 pass
 
@@ -1375,7 +1566,7 @@ class Node:
 
     @active_bus.setter
     def active_bus(self, bus):
-        logger.info("Active bus is now {}".format(bus.channel))
+        logger.info(f"Active bus is now {bus.channel}")
         self._active_bus = bus
 
     def emcy(self, eec, msef=0):
@@ -1411,7 +1602,7 @@ class Node:
             nmt_state, channel = nmt_state
         if channel is None:
             channel = self.active_bus.channel
-        logger.info("Entering NMT state on {} with value 0x{:02X}".format(channel, nmt_state))
+        logger.info(f"Entering NMT state on {channel} with value 0x{nmt_state:02X}")
         if channel == self.default_bus.channel:
             self._nmt_state = nmt_state
             try:
@@ -1446,6 +1637,18 @@ class Node:
     def on_active_nmt_master_won(self):
         pass
 
+    def on_emcy(self, can_id, eec, er, msef):
+        pass
+
+    def on_error(self, msg, args):
+        pass
+
+    def on_message(self, msg):
+        pass
+
+    def on_node_bootup(self, id, in_network): # CiA 302-2 section 4.3
+        pass
+
     def on_sdo_download(self, odi, odsi, obj, sub_obj):
         pass
 
@@ -1462,13 +1665,17 @@ class Node:
         self.nmt_state = (NMT_STATE_INITIALISATION, self.default_bus.channel)
         if self.redundant_bus is not None:
             self.nmt_state = (NMT_STATE_INITIALISATION, self.redundant_bus.channel)
-        self.od = copy.deepcopy(self._default_od)
+        for odi, obj in self.od.items():
+            for odsi, subobj in obj.items():
+                subobj.value = subobj.default_value
+                obj.update({odsi: subobj})
+            self.od.update({odi: obj})
+        self._heartbeat_evaluation_counters = {}
         if ODI_REDUNDANCY_CONFIGURATION in self.od:
             logger.info("Node is configured for redundancy")
             redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
-            self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
-            logger.info("Starting heartbeat evaluation timer (power-on)")
-            heartbeat_eval_time = redundancy_cfg.get(0x02).value
+            heartbeat_eval_time = redundancy_cfg.get(ODSI_REDUNDANCY_CONFIG_HB_EVAL_TIME_POWER_ON).value
+            logger.info(f"Starting heartbeat evaluation timer (power-on) for {heartbeat_eval_time} seconds")
             with self._heartbeat_evaluation_power_on_timer_lock:
                 self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
                 self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
@@ -1480,32 +1687,39 @@ class Node:
     def reset_communication(self, channel=None):
         if channel is None:
             channel = self.active_bus.channel
-        logger.info("Device reset communication on {}".format(channel))
+        logger.info(f"Device reset communication on {channel}")
         self._stop_listening(channel)
         self.nmt_state = (NMT_STATE_INITIALISATION, channel)
+        for can_id, request in self._sdo_requests.items():
+            request.set() # Resolve pending SDO requests
         self._reset_timers()
         if self._err_indicator is not None:
             with self._err_indicator_timer_lock:
                 self._cancel_timer(self._err_indicator_timer)
                 self._err_indicator_timer = IntervalTimer(self._err_indicator.interval, self._process_err_indicator)
                 self._err_indicator_timer.start()
-        for odi, obj in self._default_od.items():
-            if odi >= 0x1000 and odi <= 0x1FFF:
-                self.od.update({odi: copy.deepcopy(obj)})
+        for odi, obj in self.od.items():
+            if odi < 0x1000 or odi > 0x1FFF:
+                continue
+            for odsi, subobj in obj.items():
+                subobj.value = subobj.default_value
+                obj.update({odsi: subobj})
+            self.od.update({odi: obj})
+        self._heartbeat_evaluation_counters = {}
         if ODI_REDUNDANCY_CONFIGURATION in self.od and channel == self.active_bus.channel:
             logger.info("Node is configured for redundancy")
             redundancy_cfg = self.od.get(ODI_REDUNDANCY_CONFIGURATION)
             timer_was_running = self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
             if channel == self.default_bus.channel and timer_was_running: # CiA 302-6, Figure 7, event (3)
-                logger.info("Restarting heartbeat evaluation timer (power-on)")
-                heartbeat_eval_time = redundancy_cfg.get(0x02).value
+                heartbeat_eval_time = redundancy_cfg.get(ODSI_REDUNDANCY_CONFIG_HB_EVAL_TIME_POWER_ON).value
+                logger.info(f"Restarting heartbeat evaluation timer (power-on) for {heartbeat_eval_time} seconds")
                 with self._heartbeat_evaluation_power_on_timer_lock:
-                    self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
+                    #self._cancel_timer(self._heartbeat_evaluation_power_on_timer) # Already cancelled above
                     self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
                     self._heartbeat_evaluation_power_on_timer.start()
             else: # CiA 302-6, Figure 7, event (10) or (11)
-                logger.info("Restarting heartbeat evaluation timer (reset communication")
-                heartbeat_eval_time = redundancy_cfg.get(0x03).value
+                heartbeat_eval_time = redundancy_cfg.get(ODSI_REDUNDANCY_CONFIG_HB_EVAL_TIME_RESET_COMM).value
+                logger.info(f"Restarting heartbeat evaluation timer (reset communication) for {heartbeat_eval_time} seconds")
                 with self._heartbeat_evaluation_reset_communication_timer_lock:
                     self._cancel_timer(self._heartbeat_evaluation_reset_communication_timer)
                     self._heartbeat_evaluation_reset_communication_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_reset_communication_timeout)
@@ -1538,7 +1752,7 @@ class Node:
         if not isinstance(ts, datetime.datetime):
             raise ValueError("Timestamp must be of type datetime")
         if ts < EPOCH:
-            raise ValueError("Timestamp must be no earlier than {}".format(EPOCH))
+            raise ValueError(f"Timestamp must be no earlier than {EPOCH}")
         time_obj = self.od.get(ODI_TIME_STAMP)
         if time_obj is None:
             return False
@@ -1554,7 +1768,7 @@ class Node:
                 self._send(msg, channel=self.default_bus.channel)
             if self._redundant_nmt_state == NMT_STATE_OPERATIONAL or self._redundant_nmt_state == NMT_STATE_PREOPERATIONAL:
                 self._send(msg, channel=self.redundant_bus.channel)
-            logger.info("Sent TIME object with {}".format(ts))
+            logger.info(f"Sent TIME object with {ts}")
 
     @property
     def timestamp(self):
@@ -1566,7 +1780,7 @@ class Node:
             self._timedelta = datetime.timedelta()
         elif isinstance(ts, datetime.datetime):
             if ts < EPOCH:
-                raise ValueError("Timestamp must be no earlier than {}".format(EPOCH))
+                raise ValueError(f"Timestamp must be no earlier than {EPOCH}")
             self._timedelta = ts - datetime.datetime.now(datetime.timezone.utc)
 
     def trigger_tpdo(self, tpdo): # Event-driven TPDO
@@ -1579,3 +1793,7 @@ class Node:
                     self._send_pdo(tpdo)
                 else:
                     self._tpdo_triggers[tpdo] = True # Defer until SYNC event
+
+    def update_configuration(self, slave_id):
+        # Per CiA 302-3
+        raise NotImplementedError
