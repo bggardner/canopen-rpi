@@ -176,6 +176,7 @@ class Node:
         self._nmt_slave_states = {}
         self._pending_emcy_msgs = []
         self._redundant_nmt_state = None
+        self._redundant_reset_communication_thread = None
         self._sdo_cs = None
         self._sdo_data = None
         self._sdo_data_type = None
@@ -213,17 +214,18 @@ class Node:
         self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
         self._reset_timers()
 
-    def _boot(self, channel=None):
-        if channel is None:
-            channel = self.active_bus.channel
+    def _boot(self, channel):
         logger.info(f"Booting on {channel} with node-ID of {self.id}")
         self._send(BootupMessage(self.id), channel)
         self.nmt_state = (NMT_STATE_PREOPERATIONAL, channel)
         self._start_listening(channel)
         self._process_heartbeat_producer()
         self._process_sync()
+        if self._redundant_reset_communication_thread is not None and channel == self.default_bus.channel:
+            self._redundant_reset_communication_thread.join()
+            self._redundant_reset_communication_thread = None
         if channel == self.active_bus.channel:
-            self._nmt_startup()
+            threading.Thread(target=self._nmt_startup, daemon=True).start()
 
     @staticmethod
     def _cancel_timer(timer: threading.Timer):
@@ -359,14 +361,6 @@ class Node:
         if (nmt_startup & 0x04) == 0:
             logger.debug("Self-starting")
             self.nmt_state = NMT_STATE_OPERATIONAL
-        if (nmt_startup & 0x08) == 0:
-            if nmt_startup & 0x02:
-                logger.info("Starting all NMT slaves")
-                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
-            elif slaves_obj is not None:
-                for slave_id in range(1, slaves_obj_length + 1):
-                    logger.info(f"Starting NMT slave with node-ID {slave_id}")
-                    self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
 
     def _nmt_become_inactive_master(self):
         logger.info("Device is not active NMT master, running in NMT slave mode")
@@ -1618,6 +1612,20 @@ class Node:
         for msg in self._pending_emcy_msgs:
             self.send_emcy(msg)
 
+        # End of NMT startup, part 2
+        if self.is_active_nmt_master and nmt_state == NMT_STATE_OPERATIONAL and channel == self.active_bus.channel:
+            nmt_startup = self.od.get(ODI_NMT_STARTUP).get(ODSI_VALUE).value
+            if (nmt_startup & 0x08) == 0:
+                if nmt_startup & 0x02:
+                    logger.info("Starting all NMT slaves")
+                    self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, 0))
+                elif slave_assignment_obj is not None:
+                    for slave_id in range(1, slave_assignment_obj_length + 1):
+                        slave_assignment = slave_assignment_obj.get(slave_id).value
+                        if slave_assignment & 0x01:
+                            logger.info(f"Starting NMT slave with node-ID {slave_id}")
+                            self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, slave_id))
+
     @property
     def is_active_nmt_master(self):
         return self._nmt_active_master
@@ -1680,9 +1688,10 @@ class Node:
                 self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
                 self._heartbeat_evaluation_power_on_timer = threading.Timer(heartbeat_eval_time, self._heartbeat_evaluation_power_on_timeout)
                 self._heartbeat_evaluation_power_on_timer.start()
-        threading.Thread(target=self.reset_communication, args=(self.default_bus.channel,), daemon=True).start()
         if self.redundant_bus is not None:
-            threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,), daemon=True).start()
+            self._redundant_reset_communication_thread = threading.Thread(target=self.reset_communication, args=(self.redundant_bus.channel,), daemon=True)
+            self._redundant_reset_communication_thread.start()
+        self.reset_communication(self.default_bus.channel)
 
     def reset_communication(self, channel=None):
         if channel is None:
