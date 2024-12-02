@@ -108,7 +108,7 @@ class Node:
     def __init__(self, bus: can.BusABC, id, od: ObjectDictionary, *args, **kwargs):
         self.default_bus = bus
         self._notifier = can.Notifier(self.default_bus, [])
-        self._listener = Listener(self._process_msg, self._on_can_error, self.default_bus.channel)
+        self._listener = Listener(self._on_message, self._on_can_error, self.default_bus.channel)
 
         if id > 0x7F or id <= 0:
             raise ValueError("Invalid Node ID")
@@ -177,6 +177,7 @@ class Node:
         self._pending_emcy_msgs = []
         self._redundant_nmt_state = None
         self._redundant_reset_communication_thread = None
+        self._rpdo_data = {}
         self._sdo_cs = None
         self._sdo_data = None
         self._sdo_data_type = None
@@ -192,14 +193,14 @@ class Node:
         self._sync_timer_lock = threading.Lock()
         self._timedelta = datetime.timedelta()
         self._tpdo_inhibit_times = {}
-        self._tpdo_triggers = [False, False, False, False]
+        self._tpdo_triggers = {}
 
         if od.get(ODI_REDUNDANCY_CONFIGURATION) is not None and "redundant_bus" in kwargs:
             if not isinstance(kwargs["redundant_bus"], can.BusABC):
                 raise TypeError
             self.redundant_bus = kwargs["redundant_bus"]
             self._redundant_notifier = can.Notifier(self.redundant_bus, [])
-            self._redundant_listener = Listener(self._process_msg, self._on_can_error, self.redundant_bus.channel)
+            self._redundant_listener = Listener(self._on_message, self._on_can_error, self.redundant_bus.channel)
         else:
             self.redundant_bus = None
             self._redundant_notifer = None
@@ -213,6 +214,25 @@ class Node:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._cancel_timer(self._heartbeat_evaluation_power_on_timer)
         self._reset_timers()
+
+    def _activate_rpdo(self, rpdo, rpdo_data):
+        mp_odi = ODI_RPDO1_COMMUNICATON_PARAMETER + rpdo - 1
+        if mp_odi not in self.od:
+            return
+        rpdo_mp = self.get(mp_odi)
+        rpdo_mp_length = rpdo_mp.get(ODSI_VALUE).value
+        byte_counter = 0
+        for odsi in range(1, rpdo_mp_length + 1):
+            rpdo_mapping = rpdo_mp.get(odsi)
+            index = rpdo_mapping >> 16
+            subindex = (rpdo_mapping >> 8) & 0xFF
+            data_length = rpdo_mapping & 0xFF
+            o = self.od.get(index)
+            so = o.get(subindex)
+            so.value = so.from_bytes(rpdo_data[byte_counter:byte_counter + data_length])
+            byte_counter += data_length
+            o.update({subindex: so})
+            self.od.update({index: o})
 
     def _boot(self, channel):
         logger.info(f"Booting on {channel} with node-ID of {self.id}")
@@ -435,7 +455,7 @@ class Node:
                             self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
                             # Set timer to be longer than timeout (arbitrarily choosing 1 second)
                             self._heartbeat_consumer_timers[slave_id] = threading.Timer(heartbeat_consumer_time + 1, lambda: None)
-                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _on_message()
                         self._heartbeat_consumer_timers[slave_id].join(heartbeat_consumer_time & 0xFFFF) # Wait for timeout
                         heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
                         self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
@@ -448,7 +468,7 @@ class Node:
                         with self._heartbeat_consumer_timers_lock:
                             self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
                             self._heartbeat_consumer_timers[slave_id] = threading.Timer(0.1, lambda: None)
-                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                            self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _on_message()
                         heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
                         self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
                         if heartbeat_event:
@@ -500,7 +520,7 @@ class Node:
                     self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
                     # Set timer to be longer than timeout (arbitrarily choosing 1 second)
                     self._heartbeat_consumer_timers[slave_id] = threading.Timer(heartbeat_consumer_time + 1, lambda: None)
-                    self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _process_msg()
+                    self._heartbeat_consumer_timers.get(slave_id).start() # If heartbeat is received, timer is cancelled in _on_message()
                 self._heartbeat_consumer_timers.get(slave_id).join(heartbeat_consumer_time) # Wait for timeout
                 heartbeat_event = self._heartbeat_consumer_timers.get(slave_id).is_alive() # If timer is still alive, then no heartbeat was received
                 self._cancel_timer(self._heartbeat_consumer_timers.get(slave_id))
@@ -620,14 +640,48 @@ class Node:
 
     def _on_sync(self):
         self._sync_counter = (self._sync_counter + 1) % 241
-        for i in range(4):
-            tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
-            if tpdo_cp is not None:
-                tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
-                if tpdo_cp_id is not None and tpdo_cp_id.value is not None and (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                    tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
-                    if tpdo_cp_type is not None and tpdo_cp_type.value is not None and (((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and self._tpdo_triggers[i]) or (self._sync_counter % tpdo_cp_type.value) == 0):
-                        self._send_pdo(i + 1)
+
+        if (
+            (self.active_bus.channel == self.default_bus.channel and self._nmt_state == NMT_STATE_OPERATIONAL)
+            or
+            (self.redundant_bus is not None and self.active_bus.channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)
+        ):
+            for i in range(0, 0x200):
+                cp_odi = ODI_RPDO1_COMMUNICATION_PARAMETER + i
+                if odi not in self.od:
+                    continue
+                rpdo_cp = self.od.get(cp_odi)
+                rpdo_cob_id = self.rpdo_cp.get(ODSI_PDO_COMM_PARAM_ID).value
+                if (rpdo_cob_id & 0x1FFFFFFF) not in self._rpdo_data:
+                    continue
+                rpdo_data = self._rpdo_data[rpdo_cob_id]
+                del self._rpdo_data[rpdo_cob_id]
+                if rpdo_cob_id & 0x80000000:
+                    continue
+                rpdo_type = rpdo_cp.get(ODSI_PDO_COMM_PARAM_TYPE).value
+                if rpdo_type > 0xF0:
+                    continue
+                mp_odi = ODI_RPDO1_MAPPING_PARAMETER + i
+                self._activate_rpdo(i + 1, rpdo_data)
+
+        for i in range(0, 0x200):
+            odi = ODI_TPDO1_COMMUNICATON_PARAMETER + i
+            if odi not in self.od:
+                continue
+            tpdo_cp = self.od.get(odi)
+            tpdo_cp_id = tpdo_cp.get(ODSI_PDO_COMM_PARAM_ID)
+            if tpdo_cp_id is None or tpdo_cp_id.value is None or (tpdo_cp_id.value >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1:
+                continue
+            tpdo_cp_type = tpdo_cp.get(ODSI_PDO_COMM_PARAM_TYPE)
+            if (
+                tpdo_cp_type is None or
+                tpdo_cp_type.value is None or
+                ((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and not self._tpdo_triggers.get(i, False)) or
+                ((tpdo_cp_type > 0 and tpdo_cp_type < 0xF1) and (self._sync_counter % tpdo_cp_type.value) != 0)
+            ):
+                continue
+            self._send_pdo(i + 1)
+
         threading.Thread(target=self.on_sync, daemon=True).start()
 
     def _process_err_indicator(self):
@@ -653,7 +707,7 @@ class Node:
                 self._heartbeat_producer_timer = IntervalTimer(heartbeat_producer_time, self._send_heartbeat)
                 self._heartbeat_producer_timer.start()
 
-    def _process_msg(self, msg: can.Message):
+    def _on_message(self, msg: can.Message):
         can_id = msg.arbitration_id
         data = msg.data
         fc = (can_id & FUNCTION_CODE_MASK) >> FUNCTION_CODE_BITNUM # Only look for restricted CAN-IDs using function code
@@ -665,9 +719,9 @@ class Node:
                 for tpdo in range(1, 5):
                     tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
                     if tpdo_cp is not None:
-                        tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                        tpdo_cp_id = tpdo_cp.get(ODSI_PDO_COMM_PARAM_ID)
                         if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0 and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_RTR_BITNUM) & 1 == 0:
-                            tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                            tpdo_cp_type = tpdo_cp.get(ODSI_PDO_COMM_PARAM_TYPE)
                             if tpdo_cp_type == 0xFC:
                                 self._tpdo_triggers[tpdo - 1] = True; # Defer until SYNC event
                             elif tpdo_cp_type == 0xFD:
@@ -845,6 +899,7 @@ class Node:
                         if time_cob_id & 0x80 and time_cob_id & 0x1FFFFFFF == can_id:
                             ms, d = struct.unpack("<IH", data[0:6])
                             self.timestamp = EPOCH + datetime.timedelta(days=d, milliseconds=ms)
+
             if (
                    (msg.channel == self.default_bus.channel and self._nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL])
                    or
@@ -1275,6 +1330,24 @@ class Node:
                     else:
                         logger.warning(f"SDO message discarded with CAN ID {can_id:03X}, no match for {sdo_client_rx_can_id:03X}")
 
+            if (
+                (msg.channel == self.default_bus.channel and self._nmt_state == NMT_STATE_OPERATIONAL)
+                or
+                (msg.redundant_bus is not None and msg.channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)
+            ):
+                for i in range(0, 0x200):
+                    cp_odi = ODI_RPDO1_COMMUNICATION_PARAMETER + i
+                    if odi in self.od:
+                        rpdo_cp = self.od.get(cp_odi)
+                        rpdo_cob_id = self.rpdo_cp.get(ODSI_PDO_COMM_PARAM_ID).value
+                        if rpdo_cob_id & 0x80000000 or msg.arbitration_id != (rpdo_cob_id & 0x1FFFFFFF):
+                            continue
+                        rpdo_type = rpdo_cp.get(ODSI_PDO_COMM_PARAM_TYPE).value
+                        if rpdo_type < 0xF1:
+                            self._rpdo_data[msg.arbitration_id] = msg.data
+                        elif rpdo_type > 0xFD:
+                            self._activate_rpdo(i + 1, msg.data)
+
             threading.Thread(target=self.on_message, args=(msg,), daemon=True).start()
 
     def _process_sync(self):
@@ -1479,14 +1552,14 @@ class Node:
                         raise ValueError("Mapped PDO object does not exist")
                 tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + i)
                 if tpdo_cp is not None:
-                    tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+                    tpdo_cp_id = tpdo_cp.get(ODSI_PDO_COMM_PARAM_ID)
                     if tpdo_cp_id is not None and tpdo_cp_id.value is not None:
                         arbitration_id = tpdo_cp_id.value & 0x1FFFFFFF
                         is_extended_id = bool(tpdo_cp_id.value & 0x20000000)
                         msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id)
                         self._tpdo_triggers[i] = False
-                        if ODSI_TPDO_COMM_PARAM_INHIBIT_TIME in tpdo_cp:
-                            tpdo_inhibit_time = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_INHIBIT_TIME).value / 10000
+                        if ODSI_PDO_COMM_PARAM_INHIBIT_TIME in tpdo_cp:
+                            tpdo_inhibit_time = tpdo_cp.get(ODSI_PDO_COMM_PARAM_INHIBIT_TIME).value / 10000
                             if i not in self._tpdo_inibit_time:
                                 self._tpdo_inhibit_times[i] = 0
                             if self._tpdo_inhibit_times[i] + tpdo_inhibit_time < time.time():
@@ -1795,9 +1868,9 @@ class Node:
     def trigger_tpdo(self, tpdo): # Event-driven TPDO
         tpdo_cp = self.od.get(ODI_TPDO1_COMMUNICATION_PARAMETER + tpdo - 1)
         if tpdo_cp is not None:
-            tpdo_cp_id = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_ID)
+            tpdo_cp_id = tpdo_cp.get(ODSI_PDO_COMM_PARAM_ID)
             if tpdo_cp_id is not None and (tpdo_cp_id >> TPDO_COMM_PARAM_ID_VALID_BITNUM) & 1 == 0:
-                tpdo_cp_type = tpdo_cp.get(ODSI_TPDO_COMM_PARAM_TYPE)
+                tpdo_cp_type = tpdo_cp.get(ODSI_PDO_COMM_PARAM_TYPE)
                 if tpdo_cp_type is not None and (tpdo_cp_type == 0xFE or tpdo_cp_type == 0xFF):
                     self._send_pdo(tpdo)
                 else:
