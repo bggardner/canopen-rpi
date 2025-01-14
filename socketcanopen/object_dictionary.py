@@ -1,4 +1,4 @@
-from collections import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping
 from configparser import ConfigParser
 import copy
 import datetime

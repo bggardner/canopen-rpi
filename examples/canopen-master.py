@@ -42,8 +42,8 @@ errled0 = socketcanopen.ErrorIndicator(PIN_ERRLED0)
 runled1 = socketcanopen.Indicator(PIN_RUNLED1, socketcanopen.Indicator.OFF)
 errled1 = socketcanopen.Indicator(PIN_ERRLED1, socketcanopen.Indicator.ON)
 
-default_bus = can.Bus(DEFAULT_CAN_INTERFACE, bustype="socketcan")
-redundant_bus = can.Bus(REDUNDANT_CAN_INTERFACE, bustype="socketcan")
+default_bus = can.Bus(DEFAULT_CAN_INTERFACE, interface="socketcan")
+redundant_bus = can.Bus(REDUNDANT_CAN_INTERFACE, interface="socketcan")
 active_bus = default_bus
 
 
@@ -261,7 +261,7 @@ while True:
                                 high_limit=6,
                                 default_value=2
                             ),
-                            socketcanopen.ODSI_TPDO_COMM_PARAM_ID: socketcanopen.SubObject(
+                            socketcanopen.ODSI_PDO_COMM_PARAM_ID: socketcanopen.SubObject(
                                 parameter_name="COB-ID used by PDO",
                                 access_type=socketcanopen.AccessType.RO,
                                 data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED32,
@@ -269,7 +269,7 @@ while True:
                                 high_limit=0xFFFFFFFF,
                                 default_value=node_id
                             ),
-                            socketcanopen.ODSI_TPDO_COMM_PARAM_TYPE: socketcanopen.SubObject(
+                            socketcanopen.ODSI_PDO_COMM_PARAM_TYPE: socketcanopen.SubObject(
                                 parameter_name="transmission type",
                                 access_type=socketcanopen.AccessType.RO,
                                 data_type=socketcanopen.ODI_DATA_TYPE_UNSIGNED8,
@@ -446,6 +446,9 @@ while True:
                 canopen_od.update({socketcanopen.ODI_NMT_SLAVE_ASSIGNMENT: nmt_slave_assignments})
 
                 with socketcanopen.Node(active_bus, node_id, canopen_od, run_indicator=runled0, err_indicator=errled0) as node:
+                    while node.nmt_state == socketcanopen.NMT_STATE_INITIALISATION:
+                        sleep(1)
+                    logger.info(bytes(node._sdo_upload_request(2, 0x1021, 0x00)).decode())
                     while True:
                         signal.pause() # Replace with application code and interact with Object Dictionary (node.od)
 

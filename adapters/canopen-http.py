@@ -93,7 +93,7 @@ def parse_net(net):
         net = default_net
     else:
         net = CAN_INTERFACES[int(net) - 1]
-    return can.Bus(net, bustype="socketcan")
+    return can.Bus(net, interface="socketcan")
 
 def parse_command(command):
     if command[0:2] == 'r/' or command[0:5] == 'read/':

@@ -11,7 +11,7 @@ CAN_INTERFACE = "vcan0"
 
 logging.basicConfig(level=logging.DEBUG)
 
-can_bus = can.Bus(CAN_INTERFACE, bustype="socketcan")
+can_bus = can.Bus(CAN_INTERFACE, interface="socketcan")
 
 node_id = 0x02
 

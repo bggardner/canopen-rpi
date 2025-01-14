@@ -22,11 +22,12 @@ NrOfRxPdo=0
 NrOfTxPdo=0
 
 [MandatoryObjects]
-SupportedObjects=4
+SupportedObjects=5
 1=0x1000
 2=0x1001
 3=0x1017
 4=0x1018
+5=0x1021
 
 [OptionalObjects]
 SupportedObjects=1
@@ -100,6 +101,11 @@ DataType=0x0007
 AccessType=ro
 DefaultValue=0x00000000
 PDOMapping=0
+
+[1021]
+ParameterName=Store EDS
+DataType=0x000F
+AccessType=ro
 
 [1200]
 SubNumber=2

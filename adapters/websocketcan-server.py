@@ -61,7 +61,7 @@ async def websocket_handler(websocket, path):
     for task in pending:
         task.cancel()
 
-can_bus = can.ThreadSafeBus(CAN_INTERFACE, bustype="socketcan")
+can_bus = can.ThreadSafeBus(CAN_INTERFACE, interface="socketcan")
 notifier = can.Notifier(can_bus, [], loop=asyncio.get_event_loop())
 websocket_server = websockets.serve(websocket_handler, WEBSOCKET_SERVER_IP_ADDRESS, WEBSOCKET_SERVER_PORT, compression=None)
 asyncio.get_event_loop().run_until_complete(websocket_server)

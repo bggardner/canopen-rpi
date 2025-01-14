@@ -203,7 +203,7 @@ class Node:
             self._redundant_listener = Listener(self._on_message, self._on_can_error, self.redundant_bus.channel)
         else:
             self.redundant_bus = None
-            self._redundant_notifer = None
+            self._redundant_notifier = None
             self._redundant_listener = None
 
         self.reset()
@@ -1439,7 +1439,28 @@ class Node:
         response = self._sdo_request(SdoUploadInitiateRequest(node_id, index, subindex))
         if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
             raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
-        return response[4:8]
+        if (response[0] & SDO_E_MASK) >> SDO_E_BITNUM:
+            return response[4:8] # Expedited
+        if (response[0] & SDO_S_MASK) >> SDO_S_BITNUM:
+            size = int.from_bytes(response[4:8], byteorder='little')
+        else:
+            size = None
+        toggle = 0
+        complete = False
+        data = []
+        while not complete:
+            response = self._sdo_request(SdoUploadSegmentRequest(node_id, toggle))
+            if (response[0] & SDO_CS_MASK) >> SDO_CS_BITNUM != SDO_SCS_UPLOAD_SEGMENT:
+                raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+            if (response[0] & SDO_T_MASK) >> SDO_T_BITNUM != toggle:
+                raise SdoAbort(index, subindex, SDO_ABORT_TOGGLE)
+            n = (response[0] & SDO_SEGMENT_N_MASK) >> SDO_SEGMENT_N_BITNUM
+            data += response[1:8-n]
+            complete = (response[0] & SDO_C_MASK) >> SDO_C_BITNUM
+            toggle ^= 1
+        if size is not None and len(data) != size:
+            raise SdoAbort(index, subindex, SDO_ABORT_PARAMETER_LENGTH)
+        return data
 
     def _send(self, msg: can.Message, channel=None):
         if channel is None:
@@ -1620,7 +1641,7 @@ class Node:
                 logger.debug(f"Stopped listening on {self.default_bus.channel}")
             except ValueError:
                 pass
-        if channel is None or channel == self.redundant_bus.channel:
+        if self.redundant_bus is not None and (channel is None or channel == self.redundant_bus.channel):
             try:
                 self._redundant_notifier.remove_listener(self._redundant_listener)
                 logger.debug(f"Stopped listening on {self.redundant_bus.channel}")

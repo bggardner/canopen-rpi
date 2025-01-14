@@ -118,7 +118,7 @@ import can
 import signal
 import socketcanopen
 
-can_bus = can.Bus("vcan0", bustype="socketcan")
+can_bus = can.Bus("vcan0", interface="socketcan")
 node_id = 0x02
 canopen_od = socketcanopen.ObjectDictionary.from_eds(os.path.dirname(os.path.abspath(__file__)) + '/node.eds', node_id)
 node = socketcanopen.Node(can_bus, node_idd, canopen_od)
