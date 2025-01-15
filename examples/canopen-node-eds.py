@@ -6,7 +6,7 @@ import signal
 
 import socketcanopen
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 CAN_INTERFACE = "vcan0"
 

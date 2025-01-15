@@ -449,6 +449,7 @@ while True:
                     while node.nmt_state == socketcanopen.NMT_STATE_INITIALISATION:
                         sleep(1)
                     logger.info(bytes(node._sdo_upload_request(2, 0x1021, 0x00)).decode())
+                    logger.info(bytes(node._sdo_block_upload_request(2, 0x1021, 0x00)).decode())
                     while True:
                         signal.pause() # Replace with application code and interact with Object Dictionary (node.od)
 

@@ -240,6 +240,39 @@ class SdoAbortResponse(SdoResponse):
         super().__init__(node_id, header, sdo_data)
 
 
+class SdoBlockUploadEndResponse(SdoResponse):
+    def __init__(self, node_id):
+        header = (SDO_CCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_END
+        super().__init__(node_id, header, bytes(7))
+
+
+class SdoBlockUploadInitiateRequest(SdoRequest):
+    def __init__(self, node_id, index, subindex, cc=1, blk_size=0x7F, pst=4):
+        header = (SDO_CCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + ((cc << SDO_BLOCK_CC_BITNUM) & SDO_BLOCK_CC_MASK) + SDO_BLOCK_SUBCOMMAND_INITIATE
+        sdo_data = struct.pack("<HBBBH", index, subindex, blk_size, pst, 0)
+        super().__init__(node_id, header, sdo_data)
+
+
+class SdoBlockUploadInitiateResponse(SdoResponse):
+    def __init__(self, node_id, index, subindex, sc=1, size=None):
+        header = (SDO_CCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + ((sc << SDO_BLOCK_SC_BITNUM) & SDO_BLOCK_SC_MASK) + ((0 if size is None else 1) << SDO_BLOCK_S_BITNUM) + SDO_BLOCK_SUBCOMMAND_INITIATE
+        sdo_data = struct.pack("<HBI", index, subindex, 0 if size is None else size)
+        super().__init__(node_id, header, sdo_data)
+
+
+class SdoBlockUploadResponse(SdoRequest):
+    def __init__(self, node_id, ackseq, blksize=0x7F):
+        header = (SDO_CCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_RESPONSE
+        sdo_data = struct.pack("<BBBI", ackseq, blksize, 0, 0)
+        super().__init__(node_id, header, sdo_data)
+
+
+class SdoBlockUploadStartRequest(SdoRequest):
+    def __init__(self, node_id):
+        header = (SDO_CCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + SDO_BLOCK_SUBCOMMAND_START
+        super().__init__(node_id, header, bytes(7))
+
+
 class SdoDownloadInitiateRequest(SdoRequest):
     def __init__(self, node_id, n, e, s, index, subindex, data):
         header = (SDO_CCS_DOWNLOAD_INITIATE << SDO_CS_BITNUM) + (n << SDO_INITIATE_N_BITNUM) + (e << SDO_E_BITNUM) + (s << SDO_S_BITNUM)

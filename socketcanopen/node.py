@@ -1163,6 +1163,8 @@ class Node:
                                         sc = cc # CRC support
                                         data_type_index = subobj.data_type
                                         data_type_length = None # Maybe use len(bytes(subobj))?
+                                        if hasattr(subobj.value, "fileno"):
+                                            data_type_length = os.fstat(subobj.value.fileno()).st_size
                                         if data_type_index in self.od:
                                             data_type_object = self.od.get(data_type_index)
                                             if ODSI_VALUE in data_type_object:
@@ -1184,7 +1186,7 @@ class Node:
                                         self._sdo_odi = odi
                                         self._sdo_odsi = odsi
                                         logger.info(f"SDO block upload initiate request for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
-                                        data = struct.pack("<BHBI", (scs << SDO_CS_BITNUM) + (sc << 2) + (s << 1) + SDO_BLOCK_SUBCOMMAND_INITIATE, self._sdo_odi, self._sdo_odsi, size)
+                                        data = struct.pack("<BHBI", (scs << SDO_CS_BITNUM) + (sc << SDO_BLOCK_SC_BITNUM) + (s << SDO_BLOCK_S_BITNUM) + SDO_BLOCK_SUBCOMMAND_INITIATE, self._sdo_odi, self._sdo_odsi, size)
                                     elif cs == SDO_BLOCK_SUBCOMMAND_START:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
@@ -1212,6 +1214,7 @@ class Node:
                                             is_extended_id = bool(sdo_server_scid.value & 0x20000000)
                                             msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                                             self._send(msg, msg.channel)
+                                            time.sleep(0.002) # Not needed for real-time clients
                                             data_len -= 7
                                             self._sdo_seqno += 1
                                         if hasattr(self._sdo_data, "seek"):
@@ -1220,7 +1223,6 @@ class Node:
                                     elif cs == SDO_BLOCK_SUBCOMMAND_RESPONSE:
                                         if self._sdo_cs != SDO_SCS_BLOCK_UPLOAD:
                                             raise SdoAbort(0, 0, SDO_ABORT_INVALID_CS);
-                                        logger.info(f"SDO block upload response for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}")
                                         ackseq = data[1]
                                         blksize = data[2]
                                         if ackseq != 0:
@@ -1247,9 +1249,14 @@ class Node:
                                             data_len = os.fstat(self._sdo_data.fileno()).st_size - self._sdo_data.tell()
                                         else:
                                             data_len = len(self._sdo_data)
-                                        logger.info(f"{data_len} bytes remaining in SDO block upload")
+                                        logger.info(f"SDO block upload response for mux 0x{self._sdo_odi:04X}{self._sdo_odsi:02X}, {data_len} bytes remaining")
                                         if data_len <= 0:
-                                            crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
+                                            logging.info(self._sdo_data)
+                                            if hasattr(self._sdo_data, "seek"):
+                                                self._sdo_data.seek(0, io.SEEK_SET)
+                                                crc = crc_hqx(self._sdo_data.read(), 0)
+                                            else:
+                                                crc = crc_hqx(bytes(self.od.get(self._sdo_odi).get(self._sdo_odsi)), 0)
                                             data = struct.pack("<BH5x", (SDO_SCS_BLOCK_UPLOAD << SDO_CS_BITNUM) + (n << 2) + SDO_BLOCK_SUBCOMMAND_END, crc)
                                         else:
                                             while data_len > 0 and self._sdo_seqno <= self._sdo_len:
@@ -1270,6 +1277,7 @@ class Node:
                                                 is_extended_id = bool(sdo_server_scid.value & 0x20000000)
                                                 msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                                                 self._send(msg, msg.channel)
+                                                time.sleep(0.002) # Not needed for real-time clients
                                                 data_len -= 7
                                                 self._sdo_seqno += 1
                                             if hasattr(self._sdo_data, "seek"):
@@ -1395,8 +1403,57 @@ class Node:
         with self._nmt_multiple_master_timer_lock:
             self._cancel_timer(self._nmt_multiple_master_timer)
 
-    def _sdo_request(self, request):
-        index, subindex = struct.unpack("<HB", request.sdo_data[0:3])
+    def _sdo_block_upload_request(self, node_id, index, subindex):
+        blk_size = 0x7F
+        response = self._sdo_request(index, subindex, SdoBlockUploadInitiateRequest(node_id, index, subindex, blk_size=blk_size))
+        if (response[0] >> SDO_CS_BITNUM) == SDO_SCS_UPLOAD_INITIATE: # Protocol switch
+            return self._on_sdo_upload_response(node_id, index, subindex, response)
+        if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_BLOCK_UPLOAD:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        if (response[0] & SDO_BLOCK_SS_MASK) >> SDO_BLOCK_SS_BITNUM != SDO_BLOCK_SUBCOMMAND_INITIATE:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        sc = (response[0] & SDO_BLOCK_SC_MASK) >> SDO_BLOCK_SC_BITNUM
+        if (response[0] & SDO_BLOCK_S_MASK) >> SDO_BLOCK_S_BITNUM:
+            size = int.from_bytes(response[4:8], byteorder='little')
+        else:
+            size = None
+        ackseq = 1
+        data = []
+        dummy_request = SdoBlockUploadResponse(node_id, ackseq, blk_size)
+        response = self._sdo_request(index, subindex, SdoBlockUploadStartRequest(node_id))
+        while True:
+            complete = (response[0] & SDO_BLOCK_C_MASK) >> SDO_BLOCK_C_BITNUM
+            seqno = response[0] & SDO_BLOCK_SEQNO_MASK
+            if seqno != ackseq:
+                logger.error(f"SDO Abort for node-ID {node_id} @ mux {index:04X}{subindex:02X}, expected seqno {ackseq}, received {seqno}")
+                raise SdoAbort(index, subindex, SDO_ABORT_INVALID_SEQNO)
+            data += response[1:8]
+            if complete:
+                response = self._sdo_request(index, subindex, SdoBlockUploadResponse(node_id, ackseq, blk_size))
+                break
+            if ackseq == blk_size:
+                response = self._sdo_request(index, subindex, SdoBlockUploadResponse(node_id, ackseq, blk_size))
+                ackseq = 1
+            else:
+                ackseq += 1
+                self._prepare_sdo_request(index, subindex, dummy_request) # Enable listener
+                response = self._sdo_response(index, subindex, dummy_request) # Wait for message
+        if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_BLOCK_UPLOAD:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        if (response[0] & SDO_BLOCK_SS_MASK) >> SDO_BLOCK_SS_BITNUM != SDO_BLOCK_SUBCOMMAND_END:
+            raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        n = (response[0] & SDO_BLOCK_N_MASK) >> SDO_BLOCK_N_BITNUM
+        data = data[0:-n]
+        if size is not None and size != len(data):
+            raise SdoAbort(index, subindex, SDO_ABORT_PARAMETER_LENGTH)
+        crc = struct.unpack("<H", response[1:3])[0]
+        if crc != crc_hqx(bytes(data), 0):
+            logger.error(f"SDO aborted, calculated 0x{crc_hqx(bytes(data), 0):04X}, received 0x{crc:04X}")
+            raise SdoAbort(index, subindex, SDO_ABORT_CRC_ERROR)
+        self._send(SdoBlockUploadEndResponse(node_id))
+        return data
+
+    def _prepare_sdo_request(self, index, subindex, request):
         # Check for client COB-IDs
         for odi in range(ODI_SDO_CLIENT, ODI_SDO_CLIENT + 0x80):
             if odi in self.od:
@@ -1411,8 +1468,15 @@ class Node:
         if self._sdo_requests.get(request.arbitration_id) is not None:
             self._send(SdoAbortResponse(request.arbitration_id, index, subindex, SDO_ABORT_GENERAL))
         self._sdo_requests[request.arbitration_id] = SdoRequestEvent(index, subindex)
+        return request
+
+    def _sdo_request(self, index, subindex, request):
+        request = self._prepare_sdo_request(index, subindex, request)
         logger.info(f"Sending SDO request with CAN ID {request.arbitration_id:03X}")
         self._send(request)
+        return self._sdo_response(index, subindex, request)
+
+    def _sdo_response(self, index, subindex, request):
         response = None
         try:
             self._sdo_requests[request.arbitration_id].wait(self.SDO_TIMEOUT)
@@ -1430,15 +1494,18 @@ class Node:
 
     def _sdo_download_request(self, node_id, index, subindex, sdo_data):
         sdo_data = sdo_data.ljust(4, b'\x00')
-        response = self._sdo_request(SdoDownloadInitiateRequest(node_id, 0, 1, 0, index, subindex, sdo_data))
+        response = self._sdo_request(index, subindex, SdoDownloadInitiateRequest(node_id, 0, 1, 0, index, subindex, sdo_data))
         if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_DOWNLOAD_INITIATE:
             raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
         return response[4:8]
 
     def _sdo_upload_request(self, node_id, index, subindex):
-        response = self._sdo_request(SdoUploadInitiateRequest(node_id, index, subindex))
+        response = self._sdo_request(index, subindex, SdoUploadInitiateRequest(node_id, index, subindex))
         if (response[0] >> SDO_CS_BITNUM) != SDO_SCS_UPLOAD_INITIATE:
             raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
+        return self._on_sdo_upload_response(node_id, index, subindex, response)
+
+    def _on_sdo_upload_response(self, node_id, index, subindex, response):
         if (response[0] & SDO_E_MASK) >> SDO_E_BITNUM:
             return response[4:8] # Expedited
         if (response[0] & SDO_S_MASK) >> SDO_S_BITNUM:
@@ -1449,7 +1516,7 @@ class Node:
         complete = False
         data = []
         while not complete:
-            response = self._sdo_request(SdoUploadSegmentRequest(node_id, toggle))
+            response = self._sdo_request(index, subindex, SdoUploadSegmentRequest(node_id, toggle))
             if (response[0] & SDO_CS_MASK) >> SDO_CS_BITNUM != SDO_SCS_UPLOAD_SEGMENT:
                 raise SdoAbort(index, subindex, SDO_ABORT_INVALID_CS)
             if (response[0] & SDO_T_MASK) >> SDO_T_BITNUM != toggle:
