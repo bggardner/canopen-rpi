@@ -872,13 +872,18 @@ class Node:
                     self.on_node_bootup(producer_id, in_network)
 
         else: # Check non-restricted CAN-IDs
+
+            # SYNC
             if self.nmt_state == NMT_STATE_OPERATIONAL and msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.4.2.3
                 sync_obj = self.od.get(ODI_SYNC)
                 if sync_obj is not None:
                     sync_obj_value = sync_obj.get(ODSI_VALUE)
                     if sync_obj_value is not None and (sync_obj_value.value & 0x1FFFFFFF) == can_id:
                         self._on_sync()
+
             if self._nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL]:
+
+                # EMCY
                 emcy_consumer_object= self.od.get(ODI_EMERGENCY_CONSUMER_OBJECT)
                 if emcy_consumer_object is not None:
                     subobjs = 0
@@ -892,6 +897,8 @@ class Node:
                             eec, er = struct.unpack("<HB", data[0:3])
                             msef = int.from_bytes(data[3:], byteorder="little")
                             self.on_emcy(can_id, eec, er, msef)
+
+                # TIME
                 if msg.channel == self.active_bus.channel: # CiA 302-6, Section 4.3.2.3
                     time_obj = self.od.get(ODI_TIME_STAMP)
                     if time_obj is not None:
@@ -900,11 +907,14 @@ class Node:
                             ms, d = struct.unpack("<IH", data[0:6])
                             self.timestamp = EPOCH + datetime.timedelta(days=d, milliseconds=ms)
 
+            # SDO
             if (
                    (msg.channel == self.default_bus.channel and self._nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL])
                    or
                    (self.redundant_bus is not None and msg.channel == self.redundant_bus.channel and self._redundant_nmt_state in [NMT_STATE_PREOPERATIONAL, NMT_STATE_OPERATIONAL])
                ) and len(data) == 8: # Ignore SDO if data is not 8 bytes
+
+                # SDO server (request)
                 sdo_server_object = self.od.get(ODI_SDO_SERVER)
                 if sdo_server_object is not None:
                     sdo_server_csid = sdo_server_object.get(ODSI_SDO_SERVER_DEFAULT_CSID)
@@ -1316,7 +1326,7 @@ class Node:
                         msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=is_extended_id, channel=msg.channel)
                         self._send(msg, msg.channel)
 
-                # Store responses to SDO requests
+                # SDO client (response)
                 # Start with pre-defiined connection set
                 if (can_id >> FUNCTION_CODE_BITNUM) == FUNCTION_CODE_SDO_TX:
                     sdo_client_rx_can_id = (FUNCTION_CODE_SDO_RX << FUNCTION_CODE_BITNUM) + (can_id & 0x7F)
@@ -1338,10 +1348,11 @@ class Node:
                     else:
                         logger.warning(f"SDO message discarded with CAN ID {can_id:03X}, no match for {sdo_client_rx_can_id:03X}")
 
+            # RPDO
             if (
                 (msg.channel == self.default_bus.channel and self._nmt_state == NMT_STATE_OPERATIONAL)
                 or
-                (msg.redundant_bus is not None and msg.channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)
+                (self.redundant_bus is not None and msg.channel == self.redundant_bus.channel and self._redundant_nmt_state == NMT_STATE_OPERATIONAL)
             ):
                 for i in range(0, 0x200):
                     cp_odi = ODI_RPDO1_COMMUNICATION_PARAMETER + i
