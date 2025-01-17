@@ -665,7 +665,7 @@ class Node:
                 self._activate_rpdo(i + 1, rpdo_data)
 
         for i in range(0, 0x200):
-            odi = ODI_TPDO1_COMMUNICATON_PARAMETER + i
+            odi = ODI_TPDO1_COMMUNICATION_PARAMETER + i
             if odi not in self.od:
                 continue
             tpdo_cp = self.od.get(odi)
