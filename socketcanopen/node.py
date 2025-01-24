@@ -677,7 +677,7 @@ class Node:
                 tpdo_cp_type is None or
                 tpdo_cp_type.value is None or
                 ((tpdo_cp_type.value == 0 or tpdo_cp_type.value == 0xFC) and not self._tpdo_triggers.get(i, False)) or
-                ((tpdo_cp_type > 0 and tpdo_cp_type < 0xF1) and (self._sync_counter % tpdo_cp_type.value) != 0)
+                ((tpdo_cp_type.value > 0 and tpdo_cp_type.value < 0xF1) and (self._sync_counter % tpdo_cp_type.value) != 0)
             ):
                 continue
             self._send_pdo(i + 1)
