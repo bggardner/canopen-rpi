@@ -629,14 +629,37 @@ class Node:
             elif comm_error_behavior == 2:
                 self.nmt_state = (NMT_STATE_STOPPED, channel)
 
-    def _on_sdo_download(self, odi, odsi, obj, sub_obj):
-        obj.update({odsi: sub_obj})
-        self.od.update({odi: obj})
-        if odi in [ODI_SYNC, ODI_SYNC_TIME]:
-            self._process_sync()
-        elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
-            self._process_heartbeat_producer()
-        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, sub_obj), daemon=True).start()
+    def _on_sdo_download(self, odi, odsi, obj, subobj):
+        # Handle special cases
+        if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
+            raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
+        if odi == ODI_REQUEST_NMT:
+            if not self.is_active_nmt_master:
+                logger.error("SDO Download to NMT Request aborted; device is not active NMT master")
+                raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
+            target_node = odsi & 0x7F
+            logger.info(f"NMT Request to node-ID {target_node} with value {subobj.value}")
+            if (subobj.value & 0x7F) == 0x04: # Stop remote node
+                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_STOP, target_node))
+            elif (subobj.value & 0x7F) == 0x05: # Start remote node
+                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, target_node))
+            elif (subobj.value & 0x7F) == 0x06: # Reset node
+                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_NODE, target_node))
+            elif (subobj.value & 0x7F) == 0x06: # Reset communication
+                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, target_node))
+            elif (subobj.value & 0x7F) == 0x06: # Enter preoperational
+                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_PREOPERATIONAL, target_node))
+            else:
+                raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
+        else:
+            # Update Object Dictionary and post-process
+            obj.update({odsi: subobj})
+            self.od.update({odi: obj})
+            if odi in [ODI_SYNC, ODI_SYNC_TIME]:
+                self._process_sync()
+            elif odi == ODI_HEARTBEAT_PRODUCER_TIME:
+                self._process_heartbeat_producer()
+        threading.Thread(target=self.on_sdo_download, args=(odi, odsi, obj, subobj), daemon=True).start()
 
     def _on_sync(self):
         self._sync_counter = (self._sync_counter + 1) % 241
@@ -996,26 +1019,6 @@ class Node:
                                     else: # e == 0, s == 0 is reserved
                                         logger.error("SDO Download Initiate Request with e=0 & s=0 aborted")
                                         raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
-                                    if e == 1: # Handle special cases
-                                        if odi == ODI_PREDEFINED_ERROR_FIELD and subobj.value != 0:
-                                            raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
-                                        if odi == ODI_REQUEST_NMT:
-                                            if not self.is_active_nmt_master:
-                                                logger.error("SDO Download to NMT Request aborted; device is not active NMT master")
-                                                raise SdoAbort(odi, odsi, SDO_ABORT_GENERAL)
-                                            target_node = odsi & 0x7F
-                                            if (subobj.value & 0x7F) == 0x04: # Stop remote node
-                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_STOP, target_node))
-                                            elif (subobj.value & 0x7F) == 0x05: # Start remote node
-                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_START, target_node))
-                                            elif (subobj.value & 0x7F) == 0x06: # Reset node
-                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_NODE, target_node))
-                                            elif (subobj.value & 0x7F) == 0x06: # Reset communication
-                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_RESET_COMMUNICATION, target_node))
-                                            elif (subobj.value & 0x7F) == 0x06: # Enter preoperational
-                                                self.send_nmt(NmtNodeControlMessage(NMT_NODE_CONTROL_PREOPERATIONAL, target_node))
-                                            else:
-                                                raise SdoAbort(odi, odsi, SDO_ABORT_INVALID_VALUE)
                                     data = struct.pack("<BHB4x", scs << SDO_CS_BITNUM, odi, odsi)
                                 elif ccs == SDO_CCS_DOWNLOAD_SEGMENT:
                                     if self._sdo_data is None:
